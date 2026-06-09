@@ -1,0 +1,23 @@
+{
+  "name": "safetynote-android",
+  "version": "1.0.0",
+  "description": "Safety NOTE - 스마트 현장 안전관리 앱",
+  "scripts": {
+    "cap:sync": "npx cap sync android",
+    "cap:build:debug": "cd android && ./gradlew assembleDebug",
+    "cap:build:release": "cd android && ./gradlew assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/geolocation": "^6.0.0",
+    "@capacitor/camera": "^6.0.0",
+    "@capacitor/filesystem": "^6.0.0",
+    "@capacitor/network": "^6.0.0",
+    "@capacitor/splash-screen": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0"
+  }
+}

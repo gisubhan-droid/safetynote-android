@@ -1,0 +1,90 @@
+name: 🔨 Safety NOTE APK 빌드
+
+on:
+  # 코드를 push할 때마다 자동 빌드
+  push:
+    branches: [ main, master ]
+  # GitHub 웹사이트에서 수동으로 실행 가능
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Android APK 빌드
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. 코드 가져오기 ─────────────────────────────────────────
+      - name: 📥 코드 다운로드
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js 설치 ──────────────────────────────────────────
+      - name: 🟢 Node.js 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # ── 3. Java 설치 ─────────────────────────────────────────────
+      - name: ☕ Java 17 설치
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ── 4. Android SDK 설정 ──────────────────────────────────────
+      - name: 🤖 Android SDK 설정
+        uses: android-actions/setup-android@v3
+
+      # ── 5. npm 패키지 설치 ───────────────────────────────────────
+      - name: 📦 패키지 설치
+        run: npm install
+
+      # ── 6. Capacitor Android 플랫폼 추가 ────────────────────────
+      - name: 📱 Android 플랫폼 추가
+        run: npx cap add android
+
+      # ── 7. 웹 에셋 동기화 ────────────────────────────────────────
+      - name: 🔄 웹 에셋 동기화
+        run: npx cap sync android
+
+      # ── 8. 커스텀 MainActivity 덮어쓰기 (핵심: 지도 앱 외부 실행) ─
+      - name: 🗺️ WebView 외부 앱 허용 설정 적용
+        run: |
+          echo ">> 커스텀 MainActivity 복사 중..."
+          DEST="android/app/src/main/java/me/linkmax/safetynote"
+          mkdir -p "$DEST"
+          cp android-overrides/app/src/main/java/me/linkmax/safetynote/MainActivity.java \
+             "$DEST/MainActivity.java"
+          echo ">> 완료: $DEST/MainActivity.java"
+
+      # ── 9. APK 빌드 ──────────────────────────────────────────────
+      - name: 🏗️ APK 빌드
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon \
+            -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
+
+      # ── 10. APK 업로드 (다운로드 가능하게 저장) ─────────────────
+      - name: 📤 APK 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: SafetyNOTE-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      # ── 11. 빌드 결과 요약 ───────────────────────────────────────
+      - name: ✅ 빌드 완료 알림
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "$APK" ]; then
+            SIZE=$(du -h "$APK" | cut -f1)
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "  ✅ APK 빌드 성공!"
+            echo "  크기: $SIZE"
+            echo "  Actions 탭 → 이 워크플로우 → Artifacts에서 다운로드"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          else
+            echo "❌ APK 파일 없음"
+            exit 1
+          fi
