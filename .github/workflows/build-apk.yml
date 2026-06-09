@@ -129,18 +129,24 @@ jobs:
           path: android/app/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}
           retention-days: 30
 
-      # ── 13. NAS에 APK 자동 배포 (NAS_URL 시크릿 설정 시 활성화) ─
+      # ── 13. NAS에 APK 자동 배포 ─────────────────────────────────
       - name: 🚀 NAS에 APK 배포
-        if: ${{ secrets.NAS_URL != '' }}
+        env:
+          NAS_URL: ${{ secrets.NAS_URL }}
+          DIST_SECRET: ${{ secrets.DIST_SECRET }}
         run: |
+          # NAS_URL 시크릿이 없으면 건너뜀
+          if [ -z "$NAS_URL" ]; then
+            echo "⏭️ NAS_URL 시크릿 미설정 → NAS 배포 건너뜀"
+            echo "   (Artifacts에서 수동 다운로드 하세요)"
+            exit 0
+          fi
+
           APK_FILE="android/app/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}"
           VERSION="${{ steps.version.outputs.version }}"
           VER_CODE="${{ steps.version.outputs.ver_code }}"
           NOTE="${{ steps.version.outputs.note }}"
           FORCE="${{ steps.version.outputs.force }}"
-          APK_SIZE="${{ env.apk_size }}"
-          NAS_URL="${{ secrets.NAS_URL }}"
-          DIST_SECRET="${{ secrets.DIST_SECRET }}"
 
           echo ">> NAS에 APK 업로드 중: $NAS_URL"
 
