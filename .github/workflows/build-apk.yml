@@ -1,11 +1,22 @@
-name: 🔨 Safety NOTE APK 빌드
+name: 🔨 Safety NOTE APK 빌드 & NAS 배포
 
 on:
-  # 코드를 push할 때마다 자동 빌드
   push:
     branches: [ main, master ]
-  # GitHub 웹사이트에서 수동으로 실행 가능
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'APK 버전 (예: 1.1.0)'
+        required: false
+        default: '1.1.0'
+      release_note:
+        description: '릴리즈 노트'
+        required: false
+        default: 'Safety NOTE Android 업데이트'
+      force_update:
+        description: '강제 업데이트 (true/false)'
+        required: false
+        default: 'false'
 
 jobs:
   build:
@@ -47,7 +58,7 @@ jobs:
       - name: 🔄 웹 에셋 동기화
         run: npx cap sync android
 
-      # ── 8. 커스텀 파일 덮어쓰기 (MainActivity + 앱 아이콘) ─────────
+      # ── 8. 커스텀 파일 덮어쓰기 (MainActivity + 앱 아이콘) ─────
       - name: 🗺️ WebView 설정 및 앱 아이콘 적용
         run: |
           echo ">> 커스텀 MainActivity 복사 중..."
@@ -67,7 +78,7 @@ jobs:
               echo ">> 완료: $density"
             fi
           done
-          echo ">> 앱 아이콘 적용 완료!"
+          echo ">> 아이콘 적용 완료!"
 
       # ── 9. APK 빌드 ──────────────────────────────────────────────
       - name: 🏗️ APK 빌드
@@ -77,26 +88,97 @@ jobs:
           ./gradlew assembleDebug --no-daemon \
             -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
 
-      # ── 10. APK 업로드 (다운로드 가능하게 저장) ─────────────────
-      - name: 📤 APK 업로드
+      # ── 10. 버전 설정 ────────────────────────────────────────────
+      - name: 🏷️ 버전 설정
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version || '1.1.0' }}"
+          NOTE="${{ github.event.inputs.release_note || 'Safety NOTE Android 업데이트' }}"
+          FORCE="${{ github.event.inputs.force_update || 'false' }}"
+          # push 이벤트면 커밋 메시지에서 버전 추출 시도
+          if [ "${{ github.event_name }}" = "push" ]; then
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            VER_FROM_MSG=$(echo "$COMMIT_MSG" | grep -oP 'v\K[\d]+\.[\d]+\.[\d]+' | head -1)
+            [ -n "$VER_FROM_MSG" ] && VERSION="$VER_FROM_MSG"
+            NOTE="$COMMIT_MSG"
+          fi
+          APK_NAME="safetynote-v${VERSION}.apk"
+          VER_CODE=$(echo "$VERSION" | tr -d '.' | sed 's/^0*//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          echo "ver_code=$VER_CODE" >> $GITHUB_OUTPUT
+          echo "note=$NOTE" >> $GITHUB_OUTPUT
+          echo "force=$FORCE" >> $GITHUB_OUTPUT
+          echo "버전: $VERSION / APK: $APK_NAME"
+
+      # ── 11. APK 이름 변경 ────────────────────────────────────────
+      - name: 📝 APK 이름 변경
+        run: |
+          APK_SRC="android/app/build/outputs/apk/debug/app-debug.apk"
+          APK_DST="android/app/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}"
+          cp "$APK_SRC" "$APK_DST"
+          APK_SIZE=$(stat -c%s "$APK_DST")
+          echo "APK 크기: $(du -h $APK_DST | cut -f1)"
+          echo "apk_size=$APK_SIZE" >> $GITHUB_ENV
+
+      # ── 12. GitHub Artifacts 저장 ────────────────────────────────
+      - name: 📤 Artifacts 저장
         uses: actions/upload-artifact@v4
         with:
-          name: SafetyNOTE-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: SafetyNOTE-APK-v${{ steps.version.outputs.version }}
+          path: android/app/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}
           retention-days: 30
 
-      # ── 11. 빌드 결과 요약 ───────────────────────────────────────
-      - name: ✅ 빌드 완료 알림
+      # ── 13. NAS에 APK 자동 배포 (NAS_URL 시크릿 설정 시 활성화) ─
+      - name: 🚀 NAS에 APK 배포
+        if: ${{ secrets.NAS_URL != '' }}
         run: |
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          if [ -f "$APK" ]; then
-            SIZE=$(du -h "$APK" | cut -f1)
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "  ✅ APK 빌드 성공!"
-            echo "  크기: $SIZE"
-            echo "  Actions 탭 → 이 워크플로우 → Artifacts에서 다운로드"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          APK_FILE="android/app/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          VER_CODE="${{ steps.version.outputs.ver_code }}"
+          NOTE="${{ steps.version.outputs.note }}"
+          FORCE="${{ steps.version.outputs.force }}"
+          APK_SIZE="${{ env.apk_size }}"
+          NAS_URL="${{ secrets.NAS_URL }}"
+          DIST_SECRET="${{ secrets.DIST_SECRET }}"
+
+          echo ">> NAS에 APK 업로드 중: $NAS_URL"
+
+          # APK 파일 업로드
+          HTTP_CODE=$(curl -s -o /tmp/upload_result.txt -w "%{http_code}" \
+            -X POST "${NAS_URL}/api/dist/apk/upload" \
+            -H "X-Dist-Secret: ${DIST_SECRET}" \
+            -F "apk=@${APK_FILE};filename=${{ steps.version.outputs.apk_name }}" \
+            -F "version=${VERSION}" \
+            -F "version_code=${VER_CODE}" \
+            -F "release_note=${NOTE}" \
+            -F "force_update=${FORCE}" \
+            --max-time 300 \
+            --retry 3 \
+            --retry-delay 10)
+
+          echo "응답 코드: $HTTP_CODE"
+          cat /tmp/upload_result.txt
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ NAS APK 배포 완료!"
+            echo "📱 다운로드: ${NAS_URL}/apk/${{ steps.version.outputs.apk_name }}"
           else
-            echo "❌ APK 파일 없음"
-            exit 1
+            echo "⚠️ NAS 배포 실패 (HTTP $HTTP_CODE) - Artifacts에서 수동 다운로드 하세요"
           fi
+
+      # ── 14. 빌드 결과 요약 ───────────────────────────────────────
+      - name: ✅ 빌드 완료 요약
+        run: |
+          APK="android/app/build/outputs/apk/debug/${{ steps.version.outputs.apk_name }}"
+          SIZE=$(du -h "$APK" | cut -f1)
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  ✅ Safety NOTE APK 빌드 성공!"
+          echo "  버전: v${{ steps.version.outputs.version }}"
+          echo "  크기: $SIZE"
+          echo "  ──────────────────────────────────────────"
+          echo "  📥 다운로드 방법:"
+          echo "  Actions 탭 → 이 워크플로우 클릭"
+          echo "  → 하단 Artifacts → SafetyNOTE-APK-v${{ steps.version.outputs.version }}"
+          echo "  → ZIP 다운로드 후 압축해제 → APK 설치!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
