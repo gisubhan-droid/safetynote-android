@@ -32,7 +32,7 @@ jobs:
       - name: 🟢 Node.js 설치
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       # ── 3. Java 설치 ─────────────────────────────────────────────
@@ -48,7 +48,7 @@ jobs:
 
       # ── 5. npm 패키지 설치 ───────────────────────────────────────
       - name: 📦 패키지 설치
-        run: npm install
+        run: npm ci
 
       # ── 6. Capacitor Android 플랫폼 추가 ────────────────────────
       - name: 📱 Android 플랫폼 추가
