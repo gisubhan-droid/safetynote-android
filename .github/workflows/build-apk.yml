@@ -47,15 +47,27 @@ jobs:
       - name: 🔄 웹 에셋 동기화
         run: npx cap sync android
 
-      # ── 8. 커스텀 MainActivity 덮어쓰기 (핵심: 지도 앱 외부 실행) ─
-      - name: 🗺️ WebView 외부 앱 허용 설정 적용
+      # ── 8. 커스텀 파일 덮어쓰기 (MainActivity + 앱 아이콘) ─────────
+      - name: 🗺️ WebView 설정 및 앱 아이콘 적용
         run: |
           echo ">> 커스텀 MainActivity 복사 중..."
           DEST="android/app/src/main/java/me/linkmax/safetynote"
           mkdir -p "$DEST"
           cp android-overrides/app/src/main/java/me/linkmax/safetynote/MainActivity.java \
              "$DEST/MainActivity.java"
-          echo ">> 완료: $DEST/MainActivity.java"
+          echo ">> 완료: MainActivity.java"
+
+          echo ">> 앱 아이콘 복사 중..."
+          for density in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+            SRC="android-overrides/app/src/main/res/$density"
+            DEST_RES="android/app/src/main/res/$density"
+            if [ -d "$SRC" ]; then
+              mkdir -p "$DEST_RES"
+              cp "$SRC"/*.png "$DEST_RES/"
+              echo ">> 완료: $density"
+            fi
+          done
+          echo ">> 앱 아이콘 적용 완료!"
 
       # ── 9. APK 빌드 ──────────────────────────────────────────────
       - name: 🏗️ APK 빌드
