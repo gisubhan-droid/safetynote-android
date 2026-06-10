@@ -174,35 +174,7 @@ jobs:
           path: ${{ env.APK_DST }}
           retention-days: 30
 
-       - name: Deploy to NAS
-        env:
-          NAS_URL: ${{ secrets.NAS_URL }}
-          DIST_SECRET: ${{ secrets.DIST_SECRET }}
-        run: |
-          if [ -z "$NAS_URL" ]; then
-            echo "NAS_URL not set - skipping NAS deploy"
-            exit 0
-          fi
-
-          HTTP_CODE=$(curl -s -o /tmp/upload_result.txt -w "%{http_code}" \
-            -X POST "${NAS_URL}/api/dist/apk/upload" \
-            -H "X-Dist-Secret: ${DIST_SECRET}" \
-            -F "apk=@${APK_DST};filename=${{ steps.version.outputs.apk_name }}" \
-            -F "version=${{ steps.version.outputs.version }}" \
-            -F "version_code=${{ steps.version.outputs.ver_code }}" \
-            -F "release_note=${{ steps.version.outputs.note }}" \
-            -F "force_update=${{ steps.version.outputs.force }}" \
-            --max-time 300 --retry 3 --retry-delay 10)
-
-          echo "HTTP response: $HTTP_CODE"
-          cat /tmp/upload_result.txt
-
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "NAS deploy success: ${NAS_URL}/apk/${{ steps.version.outputs.apk_name }}"
-          else
-            echo "NAS deploy failed (HTTP $HTTP_CODE)"
-          fi
-                - name: Create GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
@@ -212,7 +184,16 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Safety NOTE v${{ steps.version.outputs.version }}
+          body: ${{ steps.version.outputs.note }}
+          files: ${{ env.APK_DST }}
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build summary
         run: |
