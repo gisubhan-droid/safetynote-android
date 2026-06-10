@@ -50,16 +50,22 @@
 
     <!-- 알림(푸시) 권한 (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- 진동 (알림음 대신 진동) -->
+    <!-- 진동 -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 알람 정확한 시간 (Android 12+) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
-    <!-- 저장소 권한 (사진 저장 등, Android 9 이하) -->
+    <!-- 저장소 권한 -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
+
+    <!-- ✅ APK 설치 권한 (Android 8.0+ 필수 - 없으면 APK 업데이트 설치 실패) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- DownloadManager 사용 (APK 다운로드) -->
+    <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
 
     <!-- 외부 앱(지도앱) 실행을 위한 queries -->
     <queries>
