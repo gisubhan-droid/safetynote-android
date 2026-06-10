@@ -3,8 +3,7 @@
   "appName": "Safety NOTE",
   "webDir": "www",
   "server": {
-    "androidScheme": "https",
-    "cleartext": false,
+    "cleartext": true,
     "allowNavigation": [
       "*"
     ]
