@@ -43,5 +43,151 @@ jobs:
       - name: Install npm packages
         run: npm ci
 
-      - name: Add Ca
-... (output truncated, click Expand to see full output)
+      - name: Add Capacitor Android platform
+        run: npx cap add android
+
+      - name: Sync web assets
+        run: npx cap sync android
+
+      - name: Apply custom MainActivity and icons
+        run: |
+          DEST="android/app/src/main/java/me/linkmax/safetynote"
+          mkdir -p "$DEST"
+          cp android-overrides/app/src/main/java/me/linkmax/safetynote/MainActivity.java "$DEST/MainActivity.java"
+          echo "MainActivity copied"
+
+          for density in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+            SRC="android-overrides/app/src/main/res/$density"
+            DEST_RES="android/app/src/main/res/$density"
+            if [ -d "$SRC" ]; then
+              mkdir -p "$DEST_RES"
+              cp "$SRC"/*.png "$DEST_RES/"
+              echo "Icon copied: $density"
+            fi
+          done
+
+      - name: Set version info
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          FORCE="${{ github.event.inputs.force_update }}"
+          [ -z "$VERSION" ] && VERSION="1.1.0"
+          [ -z "$FORCE" ] && FORCE="false"
+
+          APK_NAME="safetynote-v${VERSION}.apk"
+          VER_CODE=$(echo "$VERSION" | awk -F. '{printf "%d%02d%02d", $1, $2, $3}')
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          echo "ver_code=$VER_CODE" >> $GITHUB_OUTPUT
+          echo "force=$FORCE" >> $GITHUB_OUTPUT
+
+          NOTE="${{ github.event.inputs.release_note }}"
+          [ -z "$NOTE" ] && NOTE="Safety NOTE update"
+          NOTE_SAFE=$(echo "$NOTE" | tr '\n' ' ' | tr -s ' ' | cut -c1-200)
+          echo "note=$NOTE_SAFE" >> $GITHUB_OUTPUT
+
+          echo "Version: $VERSION / versionCode: $VER_CODE / APK: $APK_NAME"
+
+      - name: Restore keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "KEYSTORE_BASE64 not set - will use debug build"
+            echo "use_debug=true" >> $GITHUB_OUTPUT
+          else
+            echo "$KEYSTORE_BASE64" | base64 --decode > android/app/safetynote-release.keystore
+            echo "Keystore restored"
+            echo "use_debug=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cd android
+          chmod +x gradlew
+
+          sed -i "s/versionCode [0-9]*/versionCode ${{ steps.version.outputs.ver_code }}/" app/build.gradle
+          sed -i "s/versionName \"[^\"]*\"/versionName \"${{ steps.version.outputs.version }}\"/" app/build.gradle
+
+          if [ "${{ steps.keystore.outputs.use_debug }}" = "true" ]; then
+            echo "Building debug APK (no keystore)"
+            ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
+            echo "BUILD_TYPE=debug" >> $GITHUB_ENV
+          else
+            echo "Building release APK (signed)"
+            ./gradlew assembleRelease --no-daemon \
+              -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m" \
+              -Pandroid.injected.signing.store.file="$(pwd)/app/safetynote-release.keystore" \
+              -Pandroid.injected.signing.store.password="${KEYSTORE_PASSWORD}" \
+              -Pandroid.injected.signing.key.alias="${KEY_ALIAS}" \
+              -Pandroid.injected.signing.key.password="${KEY_PASSWORD}"
+            echo "BUILD_TYPE=release" >> $GITHUB_ENV
+          fi
+
+      - name: Rename APK
+        run: |
+          if [ "$BUILD_TYPE" = "release" ]; then
+            APK_SRC="android/app/build/outputs/apk/release/app-release.apk"
+            [ ! -f "$APK_SRC" ] && APK_SRC="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          else
+            APK_SRC="android/app/build/outputs/apk/debug/app-debug.apk"
+          fi
+
+          APK_DIR=$(dirname "$APK_SRC")
+          APK_DST="${APK_DIR}/${{ steps.version.outputs.apk_name }}"
+          cp "$APK_SRC" "$APK_DST"
+          echo "APK ready: $APK_DST"
+          echo "APK_DST=$APK_DST" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SafetyNOTE-APK-v${{ steps.version.outputs.version }}
+          path: ${{ env.APK_DST }}
+          retention-days: 30
+
+      - name: Deploy to NAS
+        env:
+          NAS_URL: ${{ secrets.NAS_URL }}
+          DIST_SECRET: ${{ secrets.DIST_SECRET }}
+        run: |
+          if [ -z "$NAS_URL" ]; then
+            echo "NAS_URL not set - skipping NAS deploy"
+            exit 0
+          fi
+
+          HTTP_CODE=$(curl -s -o /tmp/upload_result.txt -w "%{http_code}" \
+            -X POST "${NAS_URL}/api/dist/apk/upload" \
+            -H "X-Dist-Secret: ${DIST_SECRET}" \
+            -F "apk=@${APK_DST};filename=${{ steps.version.outputs.apk_name }}" \
+            -F "version=${{ steps.version.outputs.version }}" \
+            -F "version_code=${{ steps.version.outputs.ver_code }}" \
+            -F "release_note=${{ steps.version.outputs.note }}" \
+            -F "force_update=${{ steps.version.outputs.force }}" \
+            --max-time 300 --retry 3 --retry-delay 10)
+
+          echo "HTTP response: $HTTP_CODE"
+          cat /tmp/upload_result.txt
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "NAS deploy success: ${NAS_URL}/apk/${{ steps.version.outputs.apk_name }}"
+          else
+            echo "NAS deploy failed (HTTP $HTTP_CODE)"
+          fi
+
+      - name: Build summary
+        run: |
+          SIZE=$(du -h "${APK_DST}" | cut -f1)
+          echo "========================================"
+          echo "  Safety NOTE APK Build Complete"
+          echo "  Version:     v${{ steps.version.outputs.version }}"
+          echo "  VersionCode: ${{ steps.version.outputs.ver_code }}"
+          echo "  Build type:  $BUILD_TYPE"
+          echo "  Size:        $SIZE"
+          echo "========================================"
