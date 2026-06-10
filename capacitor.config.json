@@ -4,10 +4,9 @@
   "webDir": "www",
   "server": {
     "androidScheme": "https",
-    "url": "https://linkmax.myds.me:3443",
     "cleartext": false,
     "allowNavigation": [
-      "linkmax.myds.me"
+      "*"
     ]
   },
   "android": {
