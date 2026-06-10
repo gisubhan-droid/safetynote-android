@@ -6,7 +6,7 @@ on:
       version:
         description: 'APK version (e.g. 1.1.0)'
         required: false
-        default: '1.2.1'
+        default: '1.2.4'
       release_note:
         description: 'Release note'
         required: false
