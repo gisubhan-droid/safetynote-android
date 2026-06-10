@@ -6,7 +6,7 @@ on:
       version:
         description: 'APK version (e.g. 1.1.0)'
         required: false
-        default: '1.2.0'
+        default: '1.2.1'
       release_note:
         description: 'Release note'
         required: false
@@ -55,6 +55,16 @@ jobs:
           mkdir -p "$DEST"
           cp android-overrides/app/src/main/java/me/linkmax/safetynote/MainActivity.java "$DEST/MainActivity.java"
           echo "MainActivity copied"
+
+          # AndroidManifest.xml 교체 (권한: GPS, 카메라, 알림, 지도앱 queries)
+          MANIFEST_SRC="android-overrides/app/src/main/AndroidManifest.xml"
+          MANIFEST_DEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_SRC" ]; then
+            cp "$MANIFEST_SRC" "$MANIFEST_DEST"
+            echo "AndroidManifest.xml replaced"
+          else
+            echo "AndroidManifest.xml override not found, using default"
+          fi
 
           # PNG 아이콘 복사 (5가지 해상도)
           for density in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
