@@ -4,11 +4,12 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.util.Log;
 
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.BridgeWebViewClient;
 
 public class MainActivity extends BridgeActivity {
 
@@ -18,8 +19,19 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // WebView에서 외부 앱(지도 앱, APK 다운로드 등) 실행 허용 설정
-        getBridge().getWebView().setWebViewClient(new WebViewClient() {
+        // ✅ 핵심 수정:
+        // 기존: new WebViewClient() 로 Bridge의 WebViewClient를 완전 교체
+        //       → shouldInterceptRequest 미동작 → http://localhost ERR_CONNECTION_REFUSED
+        //
+        // 수정: BridgeWebViewClient 상속 → shouldInterceptRequest는 부모(Bridge)에 위임
+        //       shouldOverrideUrlLoading만 오버라이드하여 외부 앱 처리 추가
+
+        getBridge().getWebView().setWebViewClient(new BridgeWebViewClient(getBridge()) {
+
+            // ── shouldInterceptRequest는 부모(Bridge)에 위임 ──────────────────
+            // @Override 하지 않음 → Capacitor가 http://localhost 에셋을 정상 서빙
+            // super.shouldInterceptRequest()가 WebViewLocalServer.shouldInterceptRequest()를
+            // 호출하여 www/ 폴더의 로컬 에셋을 반환함
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -27,8 +39,6 @@ public class MainActivity extends BridgeActivity {
                 Log.d(TAG, "URL 로딩 요청: " + url);
 
                 // ── APK 다운로드 처리 ────────────────────────────────────────
-                // window.open(url, '_system') 호출 시 Capacitor가 새 WebView를 열려하면
-                // shouldOverrideUrlLoading에서 .apk URL을 캐치하여 다운로드 처리
                 if (url.endsWith(".apk") || url.contains(".apk?") || url.contains("/apk/")) {
                     Log.d(TAG, "APK 다운로드 감지: " + url);
                     return launchExternalBrowser(url);
@@ -80,8 +90,9 @@ public class MainActivity extends BridgeActivity {
                     }
                 }
 
-                // http/https는 WebView에서 정상 로드
-                return false;
+                // ── http/https는 부모(Bridge) 처리에 위임 ──────────────────
+                // super 호출 → Bridge가 내부 URL (http://localhost) 등을 처리
+                return super.shouldOverrideUrlLoading(view, request);
             }
 
             /**
@@ -91,7 +102,6 @@ public class MainActivity extends BridgeActivity {
             private boolean launchExternalBrowser(String url) {
                 try {
                     Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                    // 시스템 기본 브라우저(크롬)로 강제 오픈
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(intent);
                     Log.d(TAG, "외부 브라우저로 오픈: " + url);
