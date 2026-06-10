@@ -1,41 +1,47 @@
-name: 🔨 Safety NOTE APK 빌드 & NAS 배포
+name: Safety NOTE APK Build and Deploy
 
 on:
-  # 수동 실행만 허용 (push 자동 트리거 제거 - 매 커밋마다 빌드 방지)
   workflow_dispatch:
     inputs:
       version:
-        description: 'APK 버전 (예: 1.1.0)'
+        description: 'APK version (e.g. 1.1.0)'
         required: false
         default: '1.1.0'
       release_note:
-        description: '릴리즈 노트'
+        description: 'Release note'
         required: false
-        default: 'Safety NOTE Android 업데이트'
+        default: 'Safety NOTE update'
       force_update:
-        description: '강제 업데이트 (true/false)'
+        description: 'Force update (true/false)'
         required: false
         default: 'false'
 
 jobs:
   build:
-    name: Android APK 빌드
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
-      # ── 1. 코드 가져오기 ─────────────────────────────────────────
-      - name: 📥 코드 다운로드
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── 2. Node.js 설치 ──────────────────────────────────────────
-      - name: 🟢 Node.js 설치
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
 
-      # ── 3. Java 설치 ─────────────────────────────────────────────
-      - name: ☕ Java 17 설치
+      - name: Setup Java 17
         uses: actions/setup-java@v4
-        w
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install npm packages
+        run: npm ci
+
+      - name: Add Ca
 ... (output truncated, click Expand to see full output)
