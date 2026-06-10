@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 경로 설정 (APK 업데이트 설치용)
+    AndroidManifest.xml의 FileProvider가 이 파일을 참조합니다.
+
+    external-files-path:
+      getExternalFilesDir() 경로 = /sdcard/Android/data/me.linkmax.safetynote/files/
+      앱 전용 외부 저장소 → 별도 저장소 권한 불필요
+      MainActivity.java: getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+-->
+<paths>
+    <external-files-path
+        name="apk_downloads"
+        path="Downloads/" />
+</paths>

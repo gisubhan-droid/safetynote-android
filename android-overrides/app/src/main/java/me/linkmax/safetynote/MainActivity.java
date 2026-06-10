@@ -62,11 +62,13 @@ public class MainActivity extends BridgeActivity {
             public void onReceive(Context context, Intent intent) {
                 long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
                 if (id == apkDownloadId && id != -1) {
-                    Log.d(TAG, "APK 다운로드 완료: " + id);
+                    Log.d(TAG, "APK 다운로드 완료: id=" + id);
                     installDownloadedApk(id);
                 }
             }
         };
+
+        // Android 13+ : RECEIVER_NOT_EXPORTED 플래그 필요
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(downloadReceiver,
                 new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
@@ -77,7 +79,9 @@ public class MainActivity extends BridgeActivity {
         }
 
         // ── WebViewClient: BridgeWebViewClient 상속 ───────────────────────────
-        // shouldInterceptRequest → 부모(Bridge)에 위임 → www/ 로컬 에셋 정상 서빙
+        // ✅ new WebViewClient() 대신 BridgeWebViewClient 사용
+        //    → shouldInterceptRequest 가 부모(Bridge)에 위임되어 www/ 로컬 에셋 정상 서빙
+        //    → ERR_CONNECTION_REFUSED 발생하지 않음
         getBridge().getWebView().setWebViewClient(new BridgeWebViewClient(getBridge()) {
 
             @Override
@@ -86,7 +90,7 @@ public class MainActivity extends BridgeActivity {
                 Log.d(TAG, "URL 로딩 요청: " + url);
 
                 // ── APK 다운로드: DownloadManager로 직접 처리 ───────────────
-                // window.open(url, '_system') 또는 링크 클릭 시 모두 캐치
+                // window.open(url, '_system') 또는 링크 클릭 모두 캐치
                 if (url.endsWith(".apk") || url.contains(".apk?") || url.contains("/apk/")) {
                     Log.d(TAG, "APK 다운로드 요청: " + url);
                     startApkDownload(url);
@@ -160,33 +164,53 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * DownloadManager로 APK 직접 다운로드
-     * - 시스템 브라우저 없이 앱 내부에서 직접 다운로드
-     * - 자체서명 인증서(NAS HTTPS) 환경 대응: HTTP도 허용
-     * - 다운로드 완료 시 BroadcastReceiver → installDownloadedApk() 호출
+     *
+     * ✅ 자체서명 인증서(NAS HTTPS) 대응:
+     *    - https → http 프로토콜 변환 시도
+     *      (AndroidManifest usesCleartextTraffic=true 설정과 함께 동작)
+     *    - DownloadManager는 WebView SSL 예외와 별개로 동작하므로
+     *      자체서명 인증서를 직접 신뢰할 수 없음 → HTTP 변환이 가장 안전
+     *
+     * ✅ 다운로드 흐름:
+     *    startApkDownload() → DownloadManager.enqueue()
+     *    → onApkDownloadStarted() JS 콜백 → 사용자에게 진행 안내
+     *    → BroadcastReceiver(ACTION_DOWNLOAD_COMPLETE) → installDownloadedApk()
+     *    → FileProvider URI → ACTION_VIEW 설치 인텐트
      */
     private void startApkDownload(String url) {
         try {
-            // 기존 다운로드 파일 삭제
+            // 기존 다운로드 파일 삭제 (재시도 시 충돌 방지)
             File destFile = new File(
                 getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
                 "safetynote-update.apk"
             );
-            if (destFile.exists()) destFile.delete();
+            if (destFile.exists()) {
+                destFile.delete();
+                Log.d(TAG, "기존 APK 삭제: " + destFile.getAbsolutePath());
+            }
 
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+            // ✅ 자체서명 인증서 대응: https → http 변환
+            // NAS의 자체서명 HTTPS는 DownloadManager에서 SSL 오류 발생 가능
+            // AndroidManifest.xml usesCleartextTraffic=true 설정으로 HTTP 허용
+            String downloadUrl = url;
+            if (downloadUrl.startsWith("https://")) {
+                downloadUrl = "http://" + downloadUrl.substring(8);
+                Log.d(TAG, "자체서명 인증서 대응: https → http 변환: " + downloadUrl);
+            }
+
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(downloadUrl));
             request.setTitle("Safety NOTE 업데이트");
             request.setDescription("새 버전을 다운로드 중...");
             request.setNotificationVisibility(
                 DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.setDestinationUri(Uri.fromFile(destFile));
-
-            // 자체서명 인증서(NAS)의 https 허용을 위해 cleartext 허용
-            // (AndroidManifest usesCleartextTraffic=true 와 함께 동작)
-            request.allowScanningByMediaScanner();
+            // HTTP 허용 (cleartext)
+            request.setAllowedOverMetered(true);
+            request.setAllowedOverRoaming(true);
 
             DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
             apkDownloadId = dm.enqueue(request);
-            Log.d(TAG, "APK 다운로드 시작: id=" + apkDownloadId + " url=" + url);
+            Log.d(TAG, "APK 다운로드 시작: id=" + apkDownloadId + " url=" + downloadUrl);
 
             // WebView JS에 다운로드 시작 알림
             getBridge().getWebView().post(() ->
@@ -196,21 +220,20 @@ public class MainActivity extends BridgeActivity {
 
         } catch (Exception e) {
             Log.e(TAG, "APK 다운로드 시작 실패: " + e.getMessage());
-            // 폴백: 시스템 브라우저로 오픈
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-            } catch (Exception e2) {
-                Log.e(TAG, "폴백 브라우저 오픈 실패: " + e2.getMessage());
-            }
+            // WebView에 실패 알림
+            getBridge().getWebView().post(() ->
+                getBridge().getWebView().evaluateJavascript(
+                    "if(window.onApkDownloadFailed) window.onApkDownloadFailed();", null)
+            );
         }
     }
 
     /**
      * 다운로드 완료 후 APK 설치 인텐트 실행
-     * - Android 7.0+ : FileProvider URI 사용 (직접 file:// 불가)
-     * - Android 8.0+ : REQUEST_INSTALL_PACKAGES 권한 필요 (AndroidManifest에 추가됨)
+     *
+     * ✅ Android 7.0+ : FileProvider URI 사용 (직접 file:// 불가 → FileUriExposedException)
+     * ✅ Android 8.0+ : REQUEST_INSTALL_PACKAGES 권한 필요 (AndroidManifest에 추가됨)
+     * ✅ file_paths.xml : res/xml/file_paths.xml 에 external-files-path 정의 필수
      */
     private void installDownloadedApk(long downloadId) {
         try {
@@ -219,58 +242,83 @@ public class MainActivity extends BridgeActivity {
             query.setFilterById(downloadId);
 
             android.database.Cursor cursor = dm.query(query);
-            if (cursor != null && cursor.moveToFirst()) {
-                int statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
-                int status = cursor.getInt(statusCol);
-
-                if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                    File apkFile = new File(
-                        getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-                        "safetynote-update.apk"
-                    );
-
-                    if (!apkFile.exists()) {
-                        Log.e(TAG, "APK 파일 없음: " + apkFile.getAbsolutePath());
-                        cursor.close();
-                        return;
-                    }
-
-                    Intent installIntent = new Intent(Intent.ACTION_VIEW);
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        // Android 7.0+ : FileProvider 사용
-                        Uri apkUri = FileProvider.getUriForFile(
-                            MainActivity.this,
-                            getPackageName() + ".fileprovider",
-                            apkFile
-                        );
-                        installIntent.setDataAndType(apkUri,
-                            "application/vnd.android.package-archive");
-                        installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    } else {
-                        // Android 6.0 이하 : 직접 file URI
-                        installIntent.setDataAndType(
-                            Uri.fromFile(apkFile),
-                            "application/vnd.android.package-archive"
-                        );
-                    }
-
-                    installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(installIntent);
-                    Log.d(TAG, "APK 설치 인텐트 실행: " + apkFile.getAbsolutePath());
-
-                } else {
-                    Log.e(TAG, "APK 다운로드 실패 status=" + status);
-                    // WebView에 실패 알림
-                    getBridge().getWebView().post(() ->
-                        getBridge().getWebView().evaluateJavascript(
-                            "if(window.onApkDownloadFailed) window.onApkDownloadFailed();", null)
-                    );
-                }
-                cursor.close();
+            if (cursor == null) {
+                Log.e(TAG, "DownloadManager 쿼리 실패");
+                return;
             }
+
+            if (!cursor.moveToFirst()) {
+                Log.e(TAG, "DownloadManager 결과 없음");
+                cursor.close();
+                return;
+            }
+
+            int statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+            int status = (statusCol >= 0) ? cursor.getInt(statusCol) : -1;
+            cursor.close();
+
+            Log.d(TAG, "APK 다운로드 상태: " + status);
+
+            if (status != DownloadManager.STATUS_SUCCESSFUL) {
+                Log.e(TAG, "APK 다운로드 실패 status=" + status);
+                // WebView에 실패 알림
+                getBridge().getWebView().post(() ->
+                    getBridge().getWebView().evaluateJavascript(
+                        "if(window.onApkDownloadFailed) window.onApkDownloadFailed();", null)
+                );
+                return;
+            }
+
+            File apkFile = new File(
+                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+                "safetynote-update.apk"
+            );
+
+            if (!apkFile.exists()) {
+                Log.e(TAG, "APK 파일 없음: " + apkFile.getAbsolutePath());
+                getBridge().getWebView().post(() ->
+                    getBridge().getWebView().evaluateJavascript(
+                        "if(window.onApkDownloadFailed) window.onApkDownloadFailed();", null)
+                );
+                return;
+            }
+
+            Log.d(TAG, "APK 파일 확인: " + apkFile.getAbsolutePath()
+                + " (" + apkFile.length() + " bytes)");
+
+            Intent installIntent = new Intent(Intent.ACTION_VIEW);
+            installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                // Android 7.0+ : FileProvider 사용
+                // AndroidManifest.xml provider authority = ${applicationId}.fileprovider
+                // res/xml/file_paths.xml 에 external-files-path 정의 필수
+                Uri apkUri = FileProvider.getUriForFile(
+                    MainActivity.this,
+                    getPackageName() + ".fileprovider",
+                    apkFile
+                );
+                installIntent.setDataAndType(apkUri,
+                    "application/vnd.android.package-archive");
+                installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                Log.d(TAG, "FileProvider URI: " + apkUri.toString());
+            } else {
+                // Android 6.0 이하 : 직접 file URI
+                installIntent.setDataAndType(
+                    Uri.fromFile(apkFile),
+                    "application/vnd.android.package-archive"
+                );
+            }
+
+            startActivity(installIntent);
+            Log.d(TAG, "APK 설치 인텐트 실행 완료");
+
         } catch (Exception e) {
-            Log.e(TAG, "APK 설치 실패: " + e.getMessage());
+            Log.e(TAG, "APK 설치 실패: " + e.getMessage(), e);
+            getBridge().getWebView().post(() ->
+                getBridge().getWebView().evaluateJavascript(
+                    "if(window.onApkDownloadFailed) window.onApkDownloadFailed();", null)
+            );
         }
     }
 
