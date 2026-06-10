@@ -323,7 +323,6 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    @Override
     public void onDestroy() {
         super.onDestroy();
         if (downloadReceiver != null) {
