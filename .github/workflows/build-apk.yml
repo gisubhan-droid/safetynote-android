@@ -6,18 +6,15 @@ on:
       version:
         description: 'APK version (e.g. 1.1.0)'
         required: false
-        default: '1.2.5'
+        default: '1.3.0'
       release_note:
         description: 'Release note'
         required: false
-        default: 'Safety NOTE update'
+        default: '4단계 로그인 개선(아이디 저장/비번토글/로딩), 5단계 앱 설정(테마/알림/글자크기), 2단계 GPS 위치 추적(작업일지 위치 자동기록/이력조회)'
       force_update:
         description: 'Force update (true/false)'
         required: false
         default: 'false'
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -187,7 +184,7 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Build summary
         run: |
           SIZE=$(du -h "${APK_DST}" | cut -f1)
