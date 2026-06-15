@@ -219,6 +219,73 @@ jobs:
             echo "   수동 설정 URL: ${APK_DOWNLOAD_URL}"
             exit 0
           fi
+      - name: Notify NAS server (auto deploy)
+        if: success()
+        env:
+          DEPLOY_WEBHOOK_SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
+          NAS_WEBHOOK_URL: ${{ secrets.NAS_WEBHOOK_URL }}
+        run: |
+          WEBHOOK_URL="${NAS_WEBHOOK_URL:-https://linkmax.myds.me:3443/api/dist/apk/webhook}"
+          VERSION="${{ steps.version.outputs.version }}"
+          APK_FILE="${{ steps.version.outputs.apk_name }}"
+          NOTE="${{ steps.version.outputs.note }}"
+          FORCE="${{ steps.version.outputs.force }}"
+          APK_DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${APK_FILE}"
+
+          echo "Webhook 호출: ${WEBHOOK_URL}"
+          echo "APK URL: ${APK_DOWNLOAD_URL}"
+
+          RESPONSE=$(curl -sk -w "\n%{http_code}" -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "{\"secret\":\"${DEPLOY_WEBHOOK_SECRET}\",\"version\":\"${VERSION}\",\"apk_url\":\"${APK_DOWNLOAD_URL}\",\"release_note\":\"${NOTE}\",\"force_update\":\"${FORCE}\"}" \
+            --connect-timeout 30 --max-time 300)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "응답 코드: ${HTTP_CODE}"
+          echo "응답 내용: ${BODY}"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ NAS 자동 배포 완료! v${VERSION} APK가 서버에 저장되었습니다."
+          else
+            echo "⚠️ NAS Webhook 응답 오류 (${HTTP_CODE})"
+            echo "   수동 설정 URL: ${APK_DOWNLOAD_URL}"
+            exit 0
+          fi
+
+      - name: Notify NAS server (auto deploy)
+        if: success()
+        env:
+          DEPLOY_WEBHOOK_SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
+          NAS_WEBHOOK_URL: ${{ secrets.NAS_WEBHOOK_URL }}
+        run: |
+          WEBHOOK_URL="${NAS_WEBHOOK_URL:-https://linkmax.myds.me:3443/api/dist/apk/webhook}"
+          VERSION="${{ steps.version.outputs.version }}"
+          APK_FILE="${{ steps.version.outputs.apk_name }}"
+          NOTE="${{ steps.version.outputs.note }}"
+          FORCE="${{ steps.version.outputs.force }}"
+          APK_DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${APK_FILE}"
+
+          echo "Webhook 호출: ${WEBHOOK_URL}"
+          echo "APK URL: ${APK_DOWNLOAD_URL}"
+
+          RESPONSE=$(curl -sk -w "\n%{http_code}" -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "{\"secret\":\"${DEPLOY_WEBHOOK_SECRET}\",\"version\":\"${VERSION}\",\"apk_url\":\"${APK_DOWNLOAD_URL}\",\"release_note\":\"${NOTE}\",\"force_update\":\"${FORCE}\"}" \
+            --connect-timeout 30 --max-time 300)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "응답 코드: ${HTTP_CODE}"
+          echo "응답 내용: ${BODY}"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ NAS 자동 배포 완료! v${VERSION} APK가 서버에 저장되었습니다."
+          else
+            echo "⚠️ NAS Webhook 응답 오류 (${HTTP_CODE})"
+            echo "   수동 설정 URL: ${APK_DOWNLOAD_URL}"
+            exit 0
+          fi
 
       - name: Build summary
         run: |
