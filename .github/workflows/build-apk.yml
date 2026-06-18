@@ -100,6 +100,93 @@ jobs:
             echo "mipmap-anydpi-v26 not found, skipping"
           fi
 
+      # ── 핵심 파일 내용 검증 ─────────────────────────────────────────────────
+      - name: Verify critical files
+        run: |
+          DEST="android/app/src/main/java/me/linkmax/safetynote"
+          FAIL=0
+
+          echo "========================================="
+          echo "  SafetyNOTE 핵심 파일 검증"
+          echo "========================================="
+
+          echo ""
+          echo "--- [1/4] MainActivity.java 브릿지 코드 확인 ---"
+          MAIN="$DEST/MainActivity.java"
+          if [ ! -f "$MAIN" ]; then
+            echo "❌ MainActivity.java 없음"; FAIL=1
+          else
+            # SafetyNoteAppBridge 내부 클래스
+            BRIDGE=$(grep -c "SafetyNoteAppBridge" "$MAIN" || true)
+            SAVE_AUTH=$(grep -c "saveAuthToken" "$MAIN" || true)
+            CLEAR_AUTH=$(grep -c "clearAuthToken" "$MAIN" || true)
+            SAVE_URL=$(grep -c "saveServerUrl" "$MAIN" || true)
+            DL_APK=$(grep -c "downloadApk" "$MAIN" || true)
+            SSL_FB=$(grep -c "https.*http.*polback\|effectiveUrl\|startsWith.*https" "$MAIN" || true)
+            JSIFACE=$(grep -c "@JavascriptInterface" "$MAIN" || true)
+
+            echo "  SafetyNoteAppBridge 클래스  : ${BRIDGE}건"
+            echo "  @JavascriptInterface 어노테이션: ${JSIFACE}건"
+            echo "  saveAuthToken()              : ${SAVE_AUTH}건"
+            echo "  clearAuthToken()             : ${CLEAR_AUTH}건"
+            echo "  saveServerUrl()              : ${SAVE_URL}건"
+            echo "  downloadApk()                : ${DL_APK}건"
+            echo "  https→http 폴백 코드         : ${SSL_FB}건"
+
+            [ "$BRIDGE" -eq 0 ] && { echo "❌ SafetyNoteAppBridge 없음 (BUG-009 미적용)"; FAIL=1; }
+            [ "$SAVE_AUTH" -eq 0 ] && { echo "❌ saveAuthToken 없음 (BUG-009 미적용)"; FAIL=1; }
+            [ "$DL_APK" -eq 0 ] && { echo "❌ downloadApk 없음 (BUG-010-2 미적용)"; FAIL=1; }
+            [ "$JSIFACE" -lt 3 ] && { echo "⚠️  @JavascriptInterface 3개 미만 (예상: saveAuthToken/clearAuthToken/saveServerUrl/downloadApk)"; }
+
+            if [ "$FAIL" -eq 0 ]; then echo "✅ MainActivity.java 브릿지 코드 OK"; fi
+          fi
+
+          echo ""
+          echo "--- [2/4] MyFirebaseMessagingService.java SSL 폴백 확인 ---"
+          FCM_SVC="$DEST/MyFirebaseMessagingService.java"
+          if [ ! -f "$FCM_SVC" ]; then
+            echo "❌ MyFirebaseMessagingService.java 없음"; FAIL=1
+          else
+            SSL_FALLBACK=$(grep -c "effectiveUrl\|https.*http\|startsWith.*https" "$FCM_SVC" || true)
+            echo "  https→http 폴백 코드: ${SSL_FALLBACK}건"
+            [ "$SSL_FALLBACK" -eq 0 ] && { echo "❌ SSL 폴백 없음 (BUG-010-1 미적용)"; FAIL=1; }
+            [ "$SSL_FALLBACK" -gt 0 ] && echo "✅ MyFirebaseMessagingService.java SSL 폴백 OK"
+          fi
+
+          echo ""
+          echo "--- [3/4] www/index.html saveServerUrl 브릿지 확인 ---"
+          INDEX_HTML="www/index.html"
+          if [ ! -f "$INDEX_HTML" ]; then
+            echo "⚠️  www/index.html 없음 (무시 가능)"
+          else
+            SAVE_URL_HTML=$(grep -c "saveServerUrl" "$INDEX_HTML" || true)
+            echo "  saveServerUrl 호출: ${SAVE_URL_HTML}건"
+            [ "$SAVE_URL_HTML" -eq 0 ] && echo "⚠️  saveServerUrl 없음 (서버 URL 저장 안 될 수 있음)"
+            [ "$SAVE_URL_HTML" -gt 0 ] && echo "✅ www/index.html saveServerUrl OK"
+          fi
+
+          echo ""
+          echo "--- [4/4] google-services.json 확인 ---"
+          GSJ="android/app/google-services.json"
+          if [ ! -f "$GSJ" ]; then
+            echo "❌ google-services.json 없음 (FCM 동작 불가)"; FAIL=1
+          else
+            PKG=$(grep -o '"package_name".*' "$GSJ" | head -1)
+            echo "  패키지: ${PKG}"
+            echo "✅ google-services.json 존재"
+          fi
+
+          echo ""
+          echo "========================================="
+          if [ "$FAIL" -ne 0 ]; then
+            echo "❌ 검증 실패 — 빌드를 중단합니다"
+            echo "========================================="
+            exit 1
+          else
+            echo "✅ 모든 핵심 파일 검증 통과"
+            echo "========================================="
+          fi
+
       # ── FCM SDK를 Gradle 파일에 주입 (Phase 2 — FEAT-025-FCM) ───────────────
       # npx cap add android 가 build.gradle을 새로 생성하므로
       # 저장소에 미리 넣는 방식은 불가 → sed 로 생성 직후 수정
@@ -275,10 +362,29 @@ jobs:
       - name: Build summary
         run: |
           SIZE=$(du -h "${APK_DST}" | cut -f1)
+          DEST="android/app/src/main/java/me/linkmax/safetynote"
+
           echo "========================================"
           echo "  Safety NOTE APK Build Complete"
+          echo "========================================"
           echo "  Version:     v${{ steps.version.outputs.version }}"
           echo "  VersionCode: ${{ steps.version.outputs.ver_code }}"
           echo "  Build type:  $BUILD_TYPE"
           echo "  Size:        $SIZE"
+          echo "  APK:         ${APK_DST}"
+          echo ""
+          echo "  [핵심 기능 포함 여부]"
+          BRIDGE=$(grep -c "SafetyNoteAppBridge" "$DEST/MainActivity.java" 2>/dev/null || echo 0)
+          JSIFACE=$(grep -c "@JavascriptInterface" "$DEST/MainActivity.java" 2>/dev/null || echo 0)
+          DL_APK=$(grep -c "downloadApk" "$DEST/MainActivity.java" 2>/dev/null || echo 0)
+          SSL_M=$(grep -c "effectiveUrl" "$DEST/MainActivity.java" 2>/dev/null || echo 0)
+          SSL_F=$(grep -c "effectiveUrl" "$DEST/MyFirebaseMessagingService.java" 2>/dev/null || echo 0)
+          echo "  BUG-009: @JavascriptInterface 브릿지 (${JSIFACE}개) → $([ $BRIDGE -gt 0 ] && echo '✅' || echo '❌')"
+          echo "  BUG-010-1: SSL https→http 폴백 (Main:${SSL_M}/FCM:${SSL_F}) → $([ $SSL_M -gt 0 ] && [ $SSL_F -gt 0 ] && echo '✅' || echo '❌')"
+          echo "  BUG-010-2: downloadApk 브릿지 (${DL_APK}건) → $([ $DL_APK -gt 0 ] && echo '✅' || echo '❌')"
+          echo ""
+          echo "  [Git 정보]"
+          echo "  Commit: $(git rev-parse --short HEAD)"
+          echo "  Branch: $(git branch --show-current)"
+          echo "  Date:   $(git log -1 --format='%ci')"
           echo "========================================"
