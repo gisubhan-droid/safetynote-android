@@ -6,11 +6,11 @@ on:
       version:
         description: 'APK version (e.g. 1.1.0)'
         required: false
-        default: '1.4.6'
+        default: '1.4.7'
       release_note:
         description: 'Release note'
         required: false
-        default: 'FCM 등록 0명 수정(BUG-010-1): SSL 폴백 추가. APK 다운로드 수정(BUG-010-2): 브릿지로 DownloadManager 직접 호출'
+        default: 'FCM 등록 0명 근본 수정(BUG-010-1 v2): HTTPS 전용 3443포트 문제 해결, HTTP 내부포트(3444) 사용'
       force_update:
         description: 'Force update (true/false)'
         required: false

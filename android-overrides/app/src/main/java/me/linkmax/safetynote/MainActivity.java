@@ -496,15 +496,20 @@ public class MainActivity extends BridgeActivity {
                 serverUrl = "https://linkmax.myds.me:3443";
             }
 
-            // ✅ [BUG-010-1 Fix] 자체서명 인증서 대응: https → http 변환
+            // ✅ [BUG-010-1 Fix v2] 자체서명 인증서 + HTTPS 전용 포트 대응
             // HttpURLConnection 은 WebView 와 달리 SSL 예외를 공유하지 않으므로
             // 자체서명 인증서에서 SSLHandshakeException 발생.
+            // NAS 서버는 HTTPS(3443) 포트만 리슨하므로 http://...:3443 은 빈 응답.
+            // 해결: https→http 변환 + 포트 3443→3444 (HTTP 전용 내부 포트).
             // AndroidManifest usesCleartextTraffic=true 설정으로 http 허용됨.
             String effectiveUrl = serverUrl;
             if (effectiveUrl.startsWith("https://")) {
                 effectiveUrl = "http://" + effectiveUrl.substring(8);
                 Log.d(TAG, "FCM 등록: https→http 변환 (자체서명 인증서 대응)");
             }
+            // HTTPS 포트(3443) → HTTP 내부 포트(3444) 변환
+            effectiveUrl = effectiveUrl.replaceAll(":3443(/|$)", ":3444$1");
+            Log.d(TAG, "FCM 등록: 최종 서버 URL = " + effectiveUrl);
 
             String apiUrl = effectiveUrl.replaceAll("/+$", "") + "/api/push/register";
             Log.d(TAG, "FCM 토큰 등록 API (로그인 후): " + apiUrl);
