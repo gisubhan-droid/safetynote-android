@@ -6,11 +6,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.util.Log;
@@ -31,6 +33,11 @@ public class MainActivity extends BridgeActivity {
 
     private static final String TAG = "SafetyNOTE";
     private static final int PERM_REQUEST_CODE = 100;
+
+    // SharedPreferences — MyFirebaseMessagingService 와 동일한 파일명/키
+    private static final String PREFS_NAME = "SafetyNotePrefs";
+    private static final String KEY_JWT    = "authToken";
+    private static final String KEY_SERVER = "serverUrl";
 
     // APK 다운로드 추적
     private long apkDownloadId = -1;
@@ -55,6 +62,17 @@ public class MainActivity extends BridgeActivity {
 
         // 권한 요청
         requestMissingPermissions();
+
+        // ── JS↔Java 브릿지 등록 ──────────────────────────────────────────────
+        // window.SafetyNoteApp.saveAuthToken(token)  — 로그인 시 JWT 저장
+        // window.SafetyNoteApp.clearAuthToken()      — 로그아웃 시 JWT 삭제
+        // window.SafetyNoteApp.saveServerUrl(url)    — 서버 URL 저장 (www/index.html 연동)
+        // MyFirebaseMessagingService 가 SharedPreferences("SafetyNotePrefs")에서
+        // "authToken" / "serverUrl" 을 읽어 FCM 토큰 서버 등록에 사용.
+        getBridge().getWebView().addJavascriptInterface(
+            new SafetyNoteAppBridge(), "SafetyNoteApp"
+        );
+        Log.d(TAG, "JS 브릿지 등록 완료: window.SafetyNoteApp");
 
         // ── DownloadManager 완료 수신기 등록 ────────────────────────────────
         downloadReceiver = new BroadcastReceiver() {
@@ -358,6 +376,132 @@ public class MainActivity extends BridgeActivity {
         for (int i = 0; i < permissions.length; i++) {
             boolean granted = (grantResults[i] == PackageManager.PERMISSION_GRANTED);
             Log.d(TAG, "권한 결과: " + permissions[i] + " → " + (granted ? "허용" : "거부"));
+        }
+    }
+
+    // ── JS↔Java 브릿지 내부 클래스 ──────────────────────────────────────────
+    //
+    // app.js(WebView) → window.SafetyNoteApp.XXX() 호출
+    //   → SharedPreferences("SafetyNotePrefs") 읽기/쓰기
+    //   → MyFirebaseMessagingService 가 동일 Prefs 에서 JWT + serverUrl 을 읽어
+    //     FCM 토큰을 서버에 등록
+    //
+    // ⚠️  @JavascriptInterface 는 별도 스레드에서 호출될 수 있으므로
+    //     UI 조작 없이 SharedPreferences 쓰기만 수행 — 스레드 안전
+    private class SafetyNoteAppBridge {
+
+        /**
+         * 로그인 성공 시 호출 — JWT 를 SharedPreferences 에 저장
+         *
+         * JS: window.SafetyNoteApp.saveAuthToken(token)
+         *
+         * 저장 후 FCM 토큰을 즉시 서버에 등록 시도
+         * (onNewToken 이 이미 발생했지만 JWT 없어 생략된 경우를 보완)
+         */
+        @JavascriptInterface
+        public void saveAuthToken(String token) {
+            if (token == null || token.isEmpty()) {
+                Log.w(TAG, "saveAuthToken: 빈 토큰 — 무시");
+                return;
+            }
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().putString(KEY_JWT, token).apply();
+            Log.d(TAG, "saveAuthToken: JWT 저장 완료 (앞 20자: "
+                + token.substring(0, Math.min(20, token.length())) + "...)");
+
+            // FCM 토큰 즉시 재등록 시도
+            // onNewToken 이 JWT 없이 호출됐을 때를 위한 보완 처리
+            com.google.firebase.messaging.FirebaseMessaging.getInstance()
+                .getToken()
+                .addOnSuccessListener(fcmToken -> {
+                    Log.d(TAG, "FCM 토큰 재등록 시도 (로그인 직후)");
+                    new Thread(() -> {
+                        // MyFirebaseMessagingService 와 동일한 등록 로직 실행
+                        triggerFcmRegistration(fcmToken);
+                    }).start();
+                })
+                .addOnFailureListener(e ->
+                    Log.w(TAG, "FCM 토큰 가져오기 실패: " + e.getMessage())
+                );
+        }
+
+        /**
+         * 로그아웃 시 호출 — JWT 를 SharedPreferences 에서 삭제
+         *
+         * JS: window.SafetyNoteApp.clearAuthToken()
+         */
+        @JavascriptInterface
+        public void clearAuthToken() {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().remove(KEY_JWT).apply();
+            Log.d(TAG, "clearAuthToken: JWT 삭제 완료");
+        }
+
+        /**
+         * 서버 URL 저장 — www/index.html 의 doConnect() 에서 호출 (선택적)
+         * MyFirebaseMessagingService 가 serverUrl 을 읽어 API 엔드포인트 결정
+         *
+         * JS: window.SafetyNoteApp.saveServerUrl(url)
+         */
+        @JavascriptInterface
+        public void saveServerUrl(String url) {
+            if (url == null || url.isEmpty()) return;
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().putString(KEY_SERVER, url).apply();
+            Log.d(TAG, "saveServerUrl: " + url);
+        }
+    }
+
+    // ── FCM 토큰 서버 등록 (로그인 직후 보완용) ──────────────────────────────
+    //
+    // MyFirebaseMessagingService.registerTokenToServer() 와 동일 로직을
+    // MainActivity 에서도 실행할 수 있도록 분리.
+    // JWT 가 SharedPreferences 에 저장된 직후 호출되므로 null 체크 생략.
+    private void triggerFcmRegistration(String fcmToken) {
+        try {
+            android.content.SharedPreferences prefs =
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String jwt       = prefs.getString(KEY_JWT, null);
+            String serverUrl = prefs.getString(KEY_SERVER, null);
+
+            if (jwt == null || jwt.isEmpty()) {
+                Log.w(TAG, "triggerFcmRegistration: JWT 없음 — 등록 생략");
+                return;
+            }
+            if (serverUrl == null || serverUrl.isEmpty()) {
+                serverUrl = "https://linkmax.myds.me:3443";
+            }
+
+            String apiUrl = serverUrl.replaceAll("/+$", "") + "/api/push/register";
+            Log.d(TAG, "FCM 토큰 등록 API (로그인 후): " + apiUrl);
+
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("fcm_token", fcmToken);
+            byte[] postData = body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+            java.net.URL url = new java.net.URL(apiUrl);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + jwt);
+            conn.setRequestProperty("Content-Length", String.valueOf(postData.length));
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+
+            try (java.io.OutputStream os = conn.getOutputStream()) {
+                os.write(postData);
+            }
+
+            int code = conn.getResponseCode();
+            Log.d(TAG, "FCM 토큰 등록 응답 (로그인 후): HTTP " + code);
+            if (code == 200) {
+                Log.i(TAG, "✅ FCM 토큰 서버 등록 완료 (로그인 후 즉시)");
+            } else {
+                Log.w(TAG, "⚠️ FCM 토큰 등록 실패: HTTP " + code);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "triggerFcmRegistration 오류: " + e.getMessage());
         }
     }
 }

@@ -6,11 +6,11 @@ on:
       version:
         description: 'APK version (e.g. 1.1.0)'
         required: false
-        default: '1.4.4'
+        default: '1.4.5'
       release_note:
         description: 'Release note'
         required: false
-        default: '서버 주소 설정 화면 개선(수정 가능/접속 테스트/포트 기본값 3443), APK 업데이트 안정성 향상'
+        default: 'FCM 푸시 알림 수신 수정(BUG-009): 로그인 시 JWT를 SharedPreferences에 저장하는 브릿지 추가 → 로그인 후 FCM 토큰 자동 서버 등록'
       force_update:
         description: 'Force update (true/false)'
         required: false

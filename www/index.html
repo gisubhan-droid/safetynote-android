@@ -555,6 +555,15 @@
       const conn = document.getElementById('connecting');
       conn.style.display = 'flex';
       document.getElementById('connectingText').textContent = url + '\n에 연결 중...';
+
+      // ── JS→Java 브릿지: SharedPreferences 에 서버 URL 저장 ──────────────
+      // MyFirebaseMessagingService 가 POST /api/push/register 엔드포인트 결정에 사용
+      if (window.SafetyNoteApp && typeof window.SafetyNoteApp.saveServerUrl === 'function') {
+        try {
+          window.SafetyNoteApp.saveServerUrl(url);
+        } catch(e) { /* 브릿지 미지원 환경 무시 */ }
+      }
+
       setTimeout(() => { window.location.replace(url); }, 400);
     }
 
