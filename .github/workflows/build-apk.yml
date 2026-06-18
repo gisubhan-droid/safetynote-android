@@ -56,7 +56,19 @@ jobs:
           cp android-overrides/app/src/main/java/me/linkmax/safetynote/MainActivity.java "$DEST/MainActivity.java"
           echo "MainActivity copied"
 
-          # AndroidManifest.xml 교체 (권한: GPS, 카메라, 알림, 지도앱 queries)
+          # MyFirebaseMessagingService.java 복사 (Phase 2 — FEAT-025-FCM)
+          if [ -f "android-overrides/app/src/main/java/me/linkmax/safetynote/MyFirebaseMessagingService.java" ]; then
+            cp android-overrides/app/src/main/java/me/linkmax/safetynote/MyFirebaseMessagingService.java "$DEST/MyFirebaseMessagingService.java"
+            echo "MyFirebaseMessagingService.java copied"
+          fi
+
+          # google-services.json 복사 (FCM 필수)
+          if [ -f "android-overrides/app/google-services.json" ]; then
+            cp android-overrides/app/google-services.json android/app/google-services.json
+            echo "google-services.json copied"
+          fi
+
+          # AndroidManifest.xml 교체 (권한: GPS, 카메라, 알림, 지도앱 queries + FCM 서비스)
           MANIFEST_SRC="android-overrides/app/src/main/AndroidManifest.xml"
           MANIFEST_DEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_SRC" ]; then

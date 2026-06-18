@@ -34,6 +34,26 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!-- ✅ FCM 메시지 수신 서비스 (Phase 2 — FEAT-025-FCM) -->
+        <service
+            android:name=".MyFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- FCM 기본 알림 채널 설정 (Android 8.0+ 기본 채널 지정) -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="safetynote_push" />
+
+        <!-- FCM 알림 아이콘 (mipmap-hdpi/ic_launcher 사용) -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@mipmap/ic_launcher" />
+
     </application>
 
     <!-- 기본 권한 -->
