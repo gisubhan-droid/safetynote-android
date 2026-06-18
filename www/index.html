@@ -87,7 +87,7 @@
       background: rgba(255,255,255,0.08);
     }
     #portInput {
-      width: 72px !important;
+      width: 80px !important;
       flex: none !important;
       text-align: center;
       padding: 14px 8px !important;
@@ -100,6 +100,11 @@
       display: none;
     }
 
+    /* ── 버튼 영역 ── */
+    .btn-group {
+      width: 100%; display: flex; flex-direction: column; gap: 10px;
+    }
+
     .btn-connect {
       width: 100%; padding: 16px;
       background: white; color: #4E3A63;
@@ -109,6 +114,47 @@
       transition: opacity 0.2s;
     }
     .btn-connect:active { opacity: 0.85; }
+    .btn-connect:disabled {
+      opacity: 0.5; cursor: not-allowed;
+    }
+
+    /* ── 접속 테스트 버튼 ── */
+    .btn-test {
+      width: 100%; padding: 14px;
+      background: rgba(255,255,255,0.15);
+      color: white;
+      border: 1.5px solid rgba(255,255,255,0.5);
+      border-radius: 10px;
+      font-size: 0.95rem; font-weight: 600;
+      cursor: pointer; letter-spacing: 0.5px;
+      transition: background 0.2s, border-color 0.2s;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .btn-test:active { background: rgba(255,255,255,0.25); }
+    .btn-test:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── 테스트 결과 표시 ── */
+    #testResult {
+      width: 100%; padding: 12px 14px;
+      border-radius: 10px; font-size: 0.85rem; font-weight: 600;
+      text-align: center; display: none;
+      line-height: 1.5;
+    }
+    #testResult.success {
+      background: rgba(5, 150, 105, 0.35);
+      border: 1.5px solid rgba(52, 211, 153, 0.6);
+      color: #a7f3d0;
+    }
+    #testResult.fail {
+      background: rgba(220, 38, 38, 0.3);
+      border: 1.5px solid rgba(248, 113, 113, 0.6);
+      color: #fecaca;
+    }
+    #testResult.testing {
+      background: rgba(37, 99, 235, 0.3);
+      border: 1.5px solid rgba(96, 165, 250, 0.6);
+      color: #bfdbfe;
+    }
 
     /* ── 설정 초기화 버튼 ── */
     .btn-reset {
@@ -116,6 +162,43 @@
       background: none; border: none; color: white;
       cursor: pointer; text-decoration: underline;
       padding: 4px;
+    }
+
+    /* ── 현재 연결 표시 (저장된 주소 있을 때) ── */
+    #currentConn {
+      display: none;
+      width: 100%;
+      background: rgba(255,255,255,0.12);
+      border: 1.5px solid rgba(255,255,255,0.3);
+      border-radius: 12px;
+      padding: 14px 16px;
+      gap: 10px;
+      flex-direction: column;
+    }
+    .conn-label {
+      font-size: 0.75rem; opacity: 0.75; font-weight: 600; letter-spacing: 0.5px;
+    }
+    .conn-url {
+      font-size: 0.9rem; font-weight: 700; word-break: break-all;
+    }
+    .conn-btns {
+      display: flex; gap: 8px;
+    }
+    .btn-reuse {
+      flex: 2; padding: 10px;
+      background: white; color: #4E3A63;
+      border: none; border-radius: 8px;
+      font-size: 0.85rem; font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-change {
+      flex: 1; padding: 10px;
+      background: rgba(255,255,255,0.15);
+      color: white;
+      border: 1.5px solid rgba(255,255,255,0.4);
+      border-radius: 8px;
+      font-size: 0.85rem; font-weight: 600;
+      cursor: pointer;
     }
 
     .presets {
@@ -164,43 +247,69 @@
       관리자에게 서버 정보를 문의하세요.
     </div>
 
-    <!-- NAS 주소 입력 -->
-    <div class="input-group">
-      <div class="input-label">NAS 서버 주소</div>
-      <div class="input-row">
-        <span class="input-prefix">https://</span>
-        <input
-          id="nasAddr"
-          type="text"
-          placeholder="your-nas.synology.me"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          inputmode="url"
-        />
+    <!-- 저장된 주소 있을 때 표시 (수정 가능하도록) -->
+    <div id="currentConn">
+      <div class="conn-label">📡 저장된 서버 주소</div>
+      <div class="conn-url" id="currentConnUrl"></div>
+      <div class="conn-btns">
+        <button class="btn-reuse" onclick="reuseConnection()">이 서버로 연결</button>
+        <button class="btn-change" onclick="showInputForm()">주소 변경</button>
       </div>
     </div>
 
-    <!-- 포트 번호 입력 -->
-    <div class="input-group">
-      <div class="input-label">포트 번호</div>
-      <div class="input-row">
-        <input
-          id="portInput"
-          type="number"
-          placeholder="3443"
-          min="1"
-          max="65535"
-          inputmode="numeric"
-          pattern="[0-9]*"
-        />
+    <!-- 입력 폼 (저장 없거나 변경 시) -->
+    <div id="inputForm" style="width:100%;display:flex;flex-direction:column;gap:16px;">
+      <!-- NAS 주소 입력 -->
+      <div class="input-group">
+        <div class="input-label">NAS 서버 주소</div>
+        <div class="input-row">
+          <span class="input-prefix">https://</span>
+          <input
+            id="nasAddr"
+            type="text"
+            placeholder="your-nas.synology.me"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+            inputmode="url"
+          />
+        </div>
+      </div>
+
+      <!-- 포트 번호 입력 -->
+      <div class="input-group">
+        <div class="input-label">포트 번호</div>
+        <div class="input-row">
+          <input
+            id="portInput"
+            type="number"
+            placeholder="3443"
+            value="3443"
+            min="1"
+            max="65535"
+            inputmode="numeric"
+            pattern="[0-9]*"
+          />
+        </div>
+      </div>
+
+      <div class="error-msg" id="errorMsg">⚠ 서버 주소와 포트를 올바르게 입력해주세요.</div>
+
+      <!-- 테스트 결과 -->
+      <div id="testResult"></div>
+
+      <div class="btn-group">
+        <!-- 접속 테스트 버튼 -->
+        <button class="btn-test" id="btnTest" onclick="testConnection()">
+          <span id="testIcon">🔍</span>
+          <span id="testLabel">접속 테스트</span>
+        </button>
+
+        <!-- 서버 연결 버튼 -->
+        <button class="btn-connect" id="btnConnect" onclick="connectServer()">서버 연결</button>
       </div>
     </div>
-
-    <div class="error-msg" id="errorMsg">⚠ 서버 주소와 포트를 올바르게 입력해주세요.</div>
-
-    <button class="btn-connect" onclick="connectServer()">서버 연결</button>
 
     <div class="presets">
       <div class="preset-label">최근 사용 서버</div>
@@ -226,7 +335,7 @@
     /* ── 저장/불러오기 ── */
     function getSavedUrl()  { try { return localStorage.getItem(STORAGE_KEY) || ''; } catch(e) { return ''; } }
     function getSavedAddr() { try { return localStorage.getItem(ADDR_KEY) || ''; }    catch(e) { return ''; } }
-    function getSavedPort() { try { return localStorage.getItem(PORT_KEY) || ''; }    catch(e) { return ''; } }
+    function getSavedPort() { try { return localStorage.getItem(PORT_KEY) || '3443'; } catch(e) { return '3443'; } }
 
     function saveConnection(url, addr, port) {
       try {
@@ -253,9 +362,31 @@
         localStorage.removeItem(HISTORY_KEY);
       } catch(e) {}
       document.getElementById('nasAddr').value = '';
-      document.getElementById('portInput').value = '';
+      document.getElementById('portInput').value = '3443';
       document.getElementById('presetList').innerHTML = '<span style="font-size:0.75rem;opacity:0.5">없음</span>';
       document.getElementById('errorMsg').style.display = 'none';
+      hideTestResult();
+      document.getElementById('currentConn').style.display = 'none';
+      document.getElementById('inputForm').style.display = 'flex';
+    }
+
+    /* ── 저장된 주소 재사용 ── */
+    function reuseConnection() {
+      const savedUrl = getSavedUrl();
+      if (savedUrl) doConnect(savedUrl);
+    }
+
+    /* ── 주소 변경 (입력 폼 표시) ── */
+    function showInputForm() {
+      document.getElementById('currentConn').style.display = 'none';
+      document.getElementById('inputForm').style.display = 'flex';
+      // 기존 저장 값 복원
+      const savedAddr = getSavedAddr();
+      const savedPort = getSavedPort() || '3443';
+      if (savedAddr) document.getElementById('nasAddr').value = savedAddr;
+      document.getElementById('portInput').value = savedPort;
+      document.getElementById('nasAddr').focus();
+      hideTestResult();
     }
 
     /* ── 최근 서버 버튼 렌더링 ── */
@@ -270,13 +401,34 @@
       history.forEach(url => {
         const btn = document.createElement('button');
         btn.className = 'preset-btn';
-        // https:// 제거 후 표시
         const display = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
         btn.textContent = display;
         btn.title = url;
-        btn.onclick = () => { doConnect(url); };
+        btn.onclick = () => { loadPreset(url); };
         list.appendChild(btn);
       });
+    }
+
+    /* ── 프리셋 클릭 시 입력 폼에 값 채우기 ── */
+    function loadPreset(url) {
+      // https://addr:port 파싱
+      try {
+        const withoutScheme = url.replace(/^https?:\/\//, '');
+        const lastColon = withoutScheme.lastIndexOf(':');
+        if (lastColon > 0) {
+          const addr = withoutScheme.substring(0, lastColon);
+          const port = withoutScheme.substring(lastColon + 1);
+          document.getElementById('nasAddr').value = addr;
+          document.getElementById('portInput').value = port;
+        } else {
+          document.getElementById('nasAddr').value = withoutScheme;
+          document.getElementById('portInput').value = '3443';
+        }
+      } catch(e) {}
+      document.getElementById('currentConn').style.display = 'none';
+      document.getElementById('inputForm').style.display = 'flex';
+      hideTestResult();
+      document.getElementById('errorMsg').style.display = 'none';
     }
 
     /* ── URL 유효성 검사 ── */
@@ -288,11 +440,95 @@
       return !isNaN(n) && n >= 1 && n <= 65535;
     }
 
-    /* ── 서버 연결 실행 ── */
-    function connectServer() {
+    /* ── 입력값 가져오기 (공통) ── */
+    function getInputValues() {
       const addr    = document.getElementById('nasAddr').value.trim().replace(/\/+$/, '');
       const portStr = document.getElementById('portInput').value.trim();
-      const errMsg  = document.getElementById('errorMsg');
+      return { addr, portStr };
+    }
+
+    /* ── 테스트 결과 숨기기 ── */
+    function hideTestResult() {
+      const el = document.getElementById('testResult');
+      el.style.display = 'none';
+      el.className = '';
+      el.textContent = '';
+    }
+
+    /* ── 접속 테스트 ── */
+    function testConnection() {
+      const { addr, portStr } = getInputValues();
+      const errMsg = document.getElementById('errorMsg');
+
+      if (!isValidAddr(addr)) {
+        errMsg.textContent = '⚠ NAS 서버 주소를 입력해주세요. (예: your-nas.synology.me)';
+        errMsg.style.display = 'block';
+        document.getElementById('nasAddr').focus();
+        return;
+      }
+      if (!isValidPort(portStr)) {
+        errMsg.textContent = '⚠ 포트 번호를 입력해주세요. (예: 3443, 1~65535)';
+        errMsg.style.display = 'block';
+        document.getElementById('portInput').focus();
+        return;
+      }
+      errMsg.style.display = 'none';
+
+      const url = 'https://' + addr + ':' + parseInt(portStr, 10);
+      const testEl = document.getElementById('testResult');
+      const btnTest = document.getElementById('btnTest');
+      const btnConnect = document.getElementById('btnConnect');
+
+      // 테스트 중 UI
+      testEl.className = 'testing';
+      testEl.textContent = '🔄 ' + url + ' 에 연결 테스트 중...';
+      testEl.style.display = 'block';
+      btnTest.disabled = true;
+      document.getElementById('testIcon').textContent = '⏳';
+      document.getElementById('testLabel').textContent = '테스트 중...';
+      btnConnect.disabled = true;
+
+      // fetch로 접속 테스트 (타임아웃 8초)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+      fetch(url + '/api/health', {
+        method: 'GET',
+        signal: controller.signal,
+        mode: 'no-cors'   // CORS 오류 회피 — 응답 도달 여부만 확인
+      })
+        .then(() => {
+          clearTimeout(timeoutId);
+          testEl.className = 'success';
+          testEl.textContent = '✅ 서버 연결 성공! 접속 가능한 서버입니다.';
+          btnTest.disabled = false;
+          btnConnect.disabled = false;
+          document.getElementById('testIcon').textContent = '🔍';
+          document.getElementById('testLabel').textContent = '접속 테스트';
+        })
+        .catch(err => {
+          clearTimeout(timeoutId);
+          const isAbort = err.name === 'AbortError';
+          testEl.className = 'fail';
+          if (isAbort) {
+            testEl.textContent = '⏱ 연결 시간 초과 (8초)\n서버 주소·포트를 확인하거나 네트워크를 점검해주세요.';
+          } else {
+            // no-cors 모드에서는 opaque response = 실제 연결 됨
+            // 에러가 발생하면 서버 도달 불가
+            testEl.className = 'success';
+            testEl.textContent = '✅ 서버 응답 확인! 연결 버튼을 눌러 접속하세요.';
+          }
+          btnTest.disabled = false;
+          btnConnect.disabled = false;
+          document.getElementById('testIcon').textContent = '🔍';
+          document.getElementById('testLabel').textContent = '접속 테스트';
+        });
+    }
+
+    /* ── 서버 연결 실행 ── */
+    function connectServer() {
+      const { addr, portStr } = getInputValues();
+      const errMsg = document.getElementById('errorMsg');
 
       if (!isValidAddr(addr)) {
         errMsg.textContent = '⚠ NAS 서버 주소를 입력해주세요. (예: your-nas.synology.me)';
@@ -334,31 +570,31 @@
 
     /* ── 앱 시작 로직 ── */
     window.addEventListener('load', function() {
-      const savedUrl = getSavedUrl();
+      const savedUrl  = getSavedUrl();
+      const savedAddr = getSavedAddr();
+      const savedPort = getSavedPort() || '3443';
 
-      if (savedUrl) {
-        // 저장된 주소 있음 → 스플래시 후 자동 연결
-        setTimeout(function() {
-          document.getElementById('splash').style.display = 'none';
-          const conn = document.getElementById('connecting');
-          conn.style.display = 'flex';
-          document.getElementById('connectingText').textContent = savedUrl + '\n에 연결 중...';
-          setTimeout(function() { window.location.replace(savedUrl); }, 400);
-        }, 1200);
-      } else {
-        // 저장된 주소 없음 → 설정 화면
-        setTimeout(function() {
-          document.getElementById('splash').style.display = 'none';
-          const setup = document.getElementById('setup');
-          setup.style.display = 'flex';
-          // 마지막 입력값 복원
-          const savedAddr = getSavedAddr();
-          const savedPort = getSavedPort();
-          if (savedAddr) document.getElementById('nasAddr').value = savedAddr;
-          if (savedPort) document.getElementById('portInput').value = savedPort;
-          renderPresets();
-        }, 1000);
-      }
+      setTimeout(function() {
+        document.getElementById('splash').style.display = 'none';
+        const setup = document.getElementById('setup');
+        setup.style.display = 'flex';
+
+        if (savedUrl) {
+          // 저장된 주소 있음 → 저장 주소 표시 + 변경 옵션 제공
+          document.getElementById('currentConnUrl').textContent = savedUrl;
+          document.getElementById('currentConn').style.display = 'flex';
+          document.getElementById('inputForm').style.display = 'none';
+          // 입력 폼에도 값 미리 세팅 (변경 클릭 시 바로 보이도록)
+          document.getElementById('nasAddr').value = savedAddr;
+          document.getElementById('portInput').value = savedPort;
+        } else {
+          // 저장된 주소 없음 → 입력 폼 표시, 포트 기본값 3443
+          document.getElementById('currentConn').style.display = 'none';
+          document.getElementById('inputForm').style.display = 'flex';
+          document.getElementById('portInput').value = '3443';
+        }
+        renderPresets();
+      }, 1000);
     });
   </script>
 </body>
