@@ -450,13 +450,37 @@ public class MainActivity extends BridgeActivity {
             prefs.edit().putString(KEY_SERVER, url).apply();
             Log.d(TAG, "saveServerUrl: " + url);
         }
+
+        /**
+         * APK 직접 다운로드 — DownloadManager 로 즉시 처리
+         *
+         * [BUG-010-2 Fix]
+         * window.open(url, '_system') 은 Capacitor 6 에서 shouldOverrideUrlLoading 을
+         * 트리거하지 않는 경우가 있음. 특히 apk_url 이 /api/dist/apk/download 처럼
+         * .apk 확장자로 끝나지 않는 내부 API 경로이면 URL 감지 조건도 미충족.
+         *
+         * 해결: JS 에서 window.SafetyNoteApp.downloadApk(url) 직접 호출
+         *       → UI 스레드에서 startApkDownload() 실행 (DownloadManager)
+         *
+         * JS: window.SafetyNoteApp.downloadApk(url)
+         */
+        @JavascriptInterface
+        public void downloadApk(String apkUrl) {
+            if (apkUrl == null || apkUrl.isEmpty()) {
+                Log.w(TAG, "downloadApk: 빈 URL — 무시");
+                return;
+            }
+            Log.d(TAG, "downloadApk 브릿지 호출: " + apkUrl);
+            // @JavascriptInterface 는 백그라운드 스레드 — DownloadManager 는 메인 스레드 필요
+            runOnUiThread(() -> startApkDownload(apkUrl));
+        }
     }
 
     // ── FCM 토큰 서버 등록 (로그인 직후 보완용) ──────────────────────────────
     //
-    // MyFirebaseMessagingService.registerTokenToServer() 와 동일 로직을
-    // MainActivity 에서도 실행할 수 있도록 분리.
-    // JWT 가 SharedPreferences 에 저장된 직후 호출되므로 null 체크 생략.
+    // [BUG-010-1 Fix] https → http 폴백 추가:
+    //   NAS 자체서명 인증서 환경에서 HttpURLConnection(HTTPS)은 SSL 오류 발생.
+    //   AndroidManifest usesCleartextTraffic=true + http 로 변환하여 호출.
     private void triggerFcmRegistration(String fcmToken) {
         try {
             android.content.SharedPreferences prefs =
@@ -472,7 +496,17 @@ public class MainActivity extends BridgeActivity {
                 serverUrl = "https://linkmax.myds.me:3443";
             }
 
-            String apiUrl = serverUrl.replaceAll("/+$", "") + "/api/push/register";
+            // ✅ [BUG-010-1 Fix] 자체서명 인증서 대응: https → http 변환
+            // HttpURLConnection 은 WebView 와 달리 SSL 예외를 공유하지 않으므로
+            // 자체서명 인증서에서 SSLHandshakeException 발생.
+            // AndroidManifest usesCleartextTraffic=true 설정으로 http 허용됨.
+            String effectiveUrl = serverUrl;
+            if (effectiveUrl.startsWith("https://")) {
+                effectiveUrl = "http://" + effectiveUrl.substring(8);
+                Log.d(TAG, "FCM 등록: https→http 변환 (자체서명 인증서 대응)");
+            }
+
+            String apiUrl = effectiveUrl.replaceAll("/+$", "") + "/api/push/register";
             Log.d(TAG, "FCM 토큰 등록 API (로그인 후): " + apiUrl);
 
             org.json.JSONObject body = new org.json.JSONObject();

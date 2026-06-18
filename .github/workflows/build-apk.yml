@@ -6,11 +6,11 @@ on:
       version:
         description: 'APK version (e.g. 1.1.0)'
         required: false
-        default: '1.4.5'
+        default: '1.4.6'
       release_note:
         description: 'Release note'
         required: false
-        default: 'FCM 푸시 알림 수신 수정(BUG-009): 로그인 시 JWT를 SharedPreferences에 저장하는 브릿지 추가 → 로그인 후 FCM 토큰 자동 서버 등록'
+        default: 'FCM 등록 0명 수정(BUG-010-1): SSL 폴백 추가. APK 다운로드 수정(BUG-010-2): 브릿지로 DownloadManager 직접 호출'
       force_update:
         description: 'Force update (true/false)'
         required: false

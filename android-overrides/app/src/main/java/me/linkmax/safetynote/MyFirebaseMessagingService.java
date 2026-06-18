@@ -164,7 +164,16 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
                 serverUrl = "https://linkmax.myds.me:3443";
             }
 
-            String apiUrl = serverUrl.replaceAll("/+$", "") + "/api/push/register";
+            // ✅ [BUG-010-1 Fix] 자체서명 인증서 대응: https → http 변환
+            // HttpURLConnection 은 WebView SSL 예외를 공유하지 않아 자체서명 인증서에서
+            // SSLHandshakeException 발생. AndroidManifest usesCleartextTraffic=true 로 http 허용.
+            String effectiveUrl = serverUrl;
+            if (effectiveUrl.startsWith("https://")) {
+                effectiveUrl = "http://" + effectiveUrl.substring(8);
+                Log.d(TAG, "FCM 등록: https→http 변환 (자체서명 인증서 대응)");
+            }
+
+            String apiUrl = effectiveUrl.replaceAll("/+$", "") + "/api/push/register";
             Log.d(TAG, "토큰 등록 API: " + apiUrl);
 
             JSONObject jsonBody = new JSONObject();
@@ -180,11 +189,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             conn.setDoOutput(true);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
-
-            // NAS 자체서명 인증서 허용 (HttpsURLConnection에만 필요 — 아래 주석 참조)
-            // 실제 자체서명 인증서 환경에서는 javax.net.ssl.HttpsURLConnection 형변환 후
-            // setSSLSocketFactory / setHostnameVerifier 설정 필요.
-            // 현재는 AndroidManifest usesCleartextTraffic=true 로 http 폴백 처리.
 
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(postData);
