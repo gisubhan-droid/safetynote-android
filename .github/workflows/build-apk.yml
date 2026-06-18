@@ -100,6 +100,44 @@ jobs:
             echo "mipmap-anydpi-v26 not found, skipping"
           fi
 
+      # ── FCM SDK를 Gradle 파일에 주입 (Phase 2 — FEAT-025-FCM) ───────────────
+      # npx cap add android 가 build.gradle을 새로 생성하므로
+      # 저장소에 미리 넣는 방식은 불가 → sed 로 생성 직후 수정
+      - name: Add FCM SDK to Gradle files
+        run: |
+          APP_GRADLE="android/app/build.gradle"
+          PROJ_GRADLE="android/build.gradle"
+
+          echo "=== [1/2] 앱 레벨 build.gradle 수정 ==="
+          if grep -q "firebase-messaging" "$APP_GRADLE"; then
+            echo "FCM SDK already present — skipping"
+          else
+            # apply plugin 블록 끝(com.android.application 줄) 바로 다음에 google-services 플러그인 추가
+            sed -i "/apply plugin: 'com.android.application'/a apply plugin: 'com.google.gms.google-services'" "$APP_GRADLE"
+
+            # dependencies { 블록 첫 줄 바로 다음에 FCM SDK 추가
+            sed -i "/^dependencies {/a\\    implementation 'com.google.firebase:firebase-messaging:23.4.0'" "$APP_GRADLE"
+
+            echo "✅ FCM SDK + google-services plugin 추가 완료"
+          fi
+
+          echo "=== [2/2] 프로젝트 레벨 build.gradle 수정 ==="
+          if grep -q "google-services" "$PROJ_GRADLE"; then
+            echo "google-services classpath already present — skipping"
+          else
+            # classpath 'com.android.tools.build:gradle:...' 줄 바로 다음에 google-services classpath 추가
+            sed -i "/classpath 'com.android.tools.build:gradle/a\\        classpath 'com.google.gms:google-services:4.4.1'" "$PROJ_GRADLE"
+
+            echo "✅ google-services classpath 추가 완료"
+          fi
+
+          echo ""
+          echo "--- app/build.gradle (상위 30줄) ---"
+          head -30 "$APP_GRADLE"
+          echo ""
+          echo "--- android/build.gradle ---"
+          cat "$PROJ_GRADLE"
+
       - name: Set version info
         id: version
         run: |
