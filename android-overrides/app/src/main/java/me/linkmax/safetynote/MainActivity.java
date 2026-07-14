@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.webkit.JavascriptInterface;
+import android.webkit.MimeTypeMap;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.util.Log;
@@ -42,6 +43,11 @@ public class MainActivity extends BridgeActivity {
     // APK 다운로드 추적
     private long apkDownloadId = -1;
     private BroadcastReceiver downloadReceiver;
+
+    // 첨부파일 다운로드 추적 (BUG-011: 첨부파일 외부 앱으로 열기)
+    private long attachDownloadId = -1;
+    private String attachFileName  = "";
+    private String attachMimeType  = "";
 
     // ── 런타임 요청 권한 목록 ─────────────────────────────────────────────────
     private static final String[] REQUIRED_PERMISSIONS;
@@ -82,6 +88,10 @@ public class MainActivity extends BridgeActivity {
                 if (id == apkDownloadId && id != -1) {
                     Log.d(TAG, "APK 다운로드 완료: id=" + id);
                     installDownloadedApk(id);
+                } else if (id == attachDownloadId && id != -1) {
+                    // BUG-011: 첨부파일 다운로드 완료 → 외부 앱으로 열기
+                    Log.d(TAG, "첨부파일 다운로드 완료: id=" + id);
+                    openDownloadedFile(id);
                 }
             }
         };
@@ -115,10 +125,26 @@ public class MainActivity extends BridgeActivity {
                     return true;  // WebView에서 직접 로드하지 않음
                 }
 
+                // ── BUG-011: 첨부파일 다운로드 → 외부 앱으로 열기 ─────────
+                // /api/attachments/{id}/download 패턴 감지
+                if (url.contains("/api/attachments/") && url.contains("/download")) {
+                    Log.d(TAG, "첨부파일 다운로드 요청: " + url);
+                    openAttachmentExternally(url);
+                    return true;
+                }
+
                 // ── 지도 앱 URL 스킴 ────────────────────────────────────────
                 if (url.startsWith("tmap://"))     return launchExternalApp(url, "https://tmap.life/");
                 if (url.startsWith("kakaomap://")) return launchExternalApp(url, "https://map.kakao.com/");
-                if (url.startsWith("nmap://"))     return launchExternalApp(url, "https://map.naver.com/");
+                // BUG-012: nmap:// → 네이버지도 앱 또는 시스템 브라우저로 열기
+                if (url.startsWith("nmap://"))     return launchNaverMap(url);
+
+                // BUG-012: 네이버지도 웹 URL → 시스템 브라우저 강제 실행
+                // https://map.naver.com/ 이 WebView 내부에서 열리면 SafetyNOTE 복귀 불가
+                if (url.startsWith("https://map.naver.com/") || url.startsWith("http://map.naver.com/")) {
+                    Log.d(TAG, "네이버지도 웹 URL 감지 → 시스템 브라우저 강제 실행: " + url);
+                    return launchInSystemBrowser(url);
+                }
 
                 // ── intent:// 스킴 ──────────────────────────────────────────
                 if (url.startsWith("intent://")) {
@@ -176,6 +202,213 @@ public class MainActivity extends BridgeActivity {
                 }
             }
         });
+    }
+
+    // ── BUG-012: 네이버지도 앱 또는 시스템 브라우저 실행 ────────────────────
+
+    /**
+     * nmap:// 스킴 처리
+     * - 네이버지도 앱 설치됨 → 앱 직접 실행
+     * - 미설치 → nmap URL에서 웹 URL 추출 후 시스템 브라우저로 강제 실행
+     *   (WebView 내부 열기 방지 → SafetyNOTE 복귀 가능)
+     */
+    private boolean launchNaverMap(String nmapUrl) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(nmapUrl));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            Log.d(TAG, "네이버지도 앱 실행: " + nmapUrl);
+            return true;
+        } catch (Exception e) {
+            // 네이버지도 미설치 → 웹 URL 추출 후 시스템 브라우저로
+            Log.d(TAG, "네이버지도 미설치 → 웹 폴백: " + nmapUrl);
+            String webUrl = extractNaverWebUrl(nmapUrl);
+            return launchInSystemBrowser(webUrl);
+        }
+    }
+
+    /**
+     * nmap:// URL에서 검색어를 추출하여 네이버지도 웹 URL로 변환
+     * 예) nmap://search?query=현장명&appname=me.linkmax.safetynote
+     *   → https://map.naver.com/p/search/현장명
+     */
+    private String extractNaverWebUrl(String nmapUrl) {
+        try {
+            Uri uri = Uri.parse(nmapUrl);
+            String query = uri.getQueryParameter("query");
+            if (query != null && !query.isEmpty()) {
+                return "https://map.naver.com/p/search/" + Uri.encode(query);
+            }
+            // lng/lat 좌표 방식
+            String lng = uri.getQueryParameter("lng");
+            String lat = uri.getQueryParameter("lat");
+            if (lng != null && lat != null) {
+                return "https://map.naver.com/p/search/" + lat + "," + lng;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "nmap URL 파싱 실패: " + e.getMessage());
+        }
+        return "https://map.naver.com/";
+    }
+
+    /**
+     * 시스템 브라우저(또는 외부 앱) 강제 실행
+     * Intent.createChooser() 사용 → WebView가 핸들러 등록 방지
+     * WebView 내부에서 열리지 않으므로 SafetyNOTE 복귀 가능
+     */
+    private boolean launchInSystemBrowser(String url) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            Intent chooser = Intent.createChooser(intent, "브라우저 선택");
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(chooser);
+            Log.d(TAG, "시스템 브라우저 강제 실행: " + url);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "시스템 브라우저 실행 실패: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ── BUG-011: 첨부파일 다운로드 후 외부 앱으로 열기 ─────────────────────
+
+    /**
+     * /api/attachments/{id}/download URL을 DownloadManager로 다운로드 후
+     * 외부 앱(PDF 뷰어, 이미지 앱 등)으로 열기
+     *
+     * ✅ 자체서명 인증서 대응: https → http 변환
+     * ✅ 파일명: URL의 filename 쿼리 파라미터 우선 사용
+     * ✅ MIME: 파일 확장자 기반 자동 감지 (MimeTypeMap)
+     */
+    private void openAttachmentExternally(String url) {
+        try {
+            // filename 쿼리 파라미터에서 파일명 추출
+            Uri uri = Uri.parse(url);
+            String rawName = uri.getQueryParameter("filename");
+            if (rawName == null || rawName.isEmpty()) {
+                // URL 경로 마지막 세그먼트에서 파일명 추출
+                String path = uri.getPath();
+                if (path != null && path.contains("/")) {
+                    String lastSeg = path.substring(path.lastIndexOf('/') + 1);
+                    rawName = lastSeg.isEmpty() ? "attachment" : lastSeg;
+                } else {
+                    rawName = "attachment";
+                }
+            }
+            final String fileName = rawName;
+
+            // 파일 확장자로 MIME 타입 결정
+            String ext = "";
+            int dotIdx = fileName.lastIndexOf('.');
+            if (dotIdx >= 0) ext = fileName.substring(dotIdx + 1).toLowerCase();
+            String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+            if (mimeType == null || mimeType.isEmpty()) mimeType = "application/octet-stream";
+            attachMimeType = mimeType;
+            attachFileName = fileName;
+
+            // 기존 동일 파일 삭제 (재다운로드 충돌 방지)
+            File destFile = new File(
+                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+                fileName
+            );
+            if (destFile.exists()) destFile.delete();
+
+            // ✅ 자체서명 인증서 대응: https → http 변환
+            String downloadUrl = url;
+            if (downloadUrl.startsWith("https://")) {
+                downloadUrl = "http://" + downloadUrl.substring(8);
+                Log.d(TAG, "첨부파일: https → http 변환: " + downloadUrl);
+            }
+
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(downloadUrl));
+            request.setTitle(fileName);
+            request.setDescription("첨부파일 다운로드 중...");
+            request.setNotificationVisibility(
+                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationUri(Uri.fromFile(destFile));
+            request.setAllowedOverMetered(true);
+            request.setAllowedOverRoaming(true);
+
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            attachDownloadId = dm.enqueue(request);
+            Log.d(TAG, "첨부파일 다운로드 시작: id=" + attachDownloadId
+                + " file=" + fileName + " mime=" + mimeType);
+
+        } catch (Exception e) {
+            Log.e(TAG, "첨부파일 다운로드 시작 실패: " + e.getMessage());
+        }
+    }
+
+    /**
+     * DownloadManager 완료 후 파일을 외부 앱으로 열기
+     *
+     * ✅ Android 7.0+ : FileProvider URI (file:// 직접 사용 금지)
+     * ✅ createChooser() : 외부 앱 선택 강제 (WebView 내부 열기 방지)
+     */
+    private void openDownloadedFile(long downloadId) {
+        try {
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            DownloadManager.Query query = new DownloadManager.Query();
+            query.setFilterById(downloadId);
+
+            android.database.Cursor cursor = dm.query(query);
+            if (cursor == null || !cursor.moveToFirst()) {
+                Log.e(TAG, "첨부파일 DownloadManager 쿼리 실패");
+                if (cursor != null) cursor.close();
+                return;
+            }
+
+            int statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+            int status = (statusCol >= 0) ? cursor.getInt(statusCol) : -1;
+            cursor.close();
+
+            if (status != DownloadManager.STATUS_SUCCESSFUL) {
+                Log.e(TAG, "첨부파일 다운로드 실패 status=" + status);
+                return;
+            }
+
+            File file = new File(
+                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+                attachFileName
+            );
+
+            if (!file.exists()) {
+                Log.e(TAG, "첨부파일 없음: " + file.getAbsolutePath());
+                return;
+            }
+
+            Log.d(TAG, "첨부파일 열기: " + file.getAbsolutePath()
+                + " mime=" + attachMimeType);
+
+            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+            viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                // Android 7.0+ : FileProvider 사용
+                Uri fileUri = FileProvider.getUriForFile(
+                    MainActivity.this,
+                    getPackageName() + ".fileprovider",
+                    file
+                );
+                viewIntent.setDataAndType(fileUri, attachMimeType);
+                viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                viewIntent.setDataAndType(Uri.fromFile(file), attachMimeType);
+            }
+
+            // createChooser: 외부 앱 선택 강제 (WebView 내부 열기 방지)
+            Intent chooser = Intent.createChooser(viewIntent, "파일 열기");
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(chooser);
+            Log.d(TAG, "첨부파일 외부 앱 실행 완료");
+
+            // 다운로드 ID 초기화
+            attachDownloadId = -1;
+
+        } catch (Exception e) {
+            Log.e(TAG, "첨부파일 열기 실패: " + e.getMessage(), e);
+        }
     }
 
     // ── APK 다운로드 (DownloadManager) ───────────────────────────────────────
