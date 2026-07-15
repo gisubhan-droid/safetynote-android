@@ -440,13 +440,23 @@ public class MainActivity extends BridgeActivity {
                 Log.d(TAG, "기존 APK 삭제: " + destFile.getAbsolutePath());
             }
 
-            // ✅ 자체서명 인증서 대응: https → http 변환
-            // NAS의 자체서명 HTTPS는 DownloadManager에서 SSL 오류 발생 가능
-            // AndroidManifest.xml usesCleartextTraffic=true 설정으로 HTTP 허용
+            // ✅ 자체서명 인증서 대응: NAS URL만 https → http 변환
+            // - NAS(자체서명 인증서): DownloadManager에서 SSL 오류 → http 변환 필요
+            // - GitHub/외부 공인 인증서 서버: https 그대로 유지 (http로 변환 시 차단됨)
+            // NAS 판별: github.com, githubusercontent.com 등 외부 도메인 제외
             String downloadUrl = url;
             if (downloadUrl.startsWith("https://")) {
-                downloadUrl = "http://" + downloadUrl.substring(8);
-                Log.d(TAG, "자체서명 인증서 대응: https → http 변환: " + downloadUrl);
+                boolean isExternalTrustedHost =
+                    downloadUrl.contains("github.com") ||
+                    downloadUrl.contains("githubusercontent.com") ||
+                    downloadUrl.contains("objects.githubusercontent.com") ||
+                    downloadUrl.contains("releases.githubusercontent.com");
+                if (!isExternalTrustedHost) {
+                    downloadUrl = "http://" + downloadUrl.substring(8);
+                    Log.d(TAG, "NAS 자체서명 인증서 대응: https → http 변환: " + downloadUrl);
+                } else {
+                    Log.d(TAG, "외부 공인 서버(GitHub 등): https 유지: " + downloadUrl);
+                }
             }
 
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(downloadUrl));
