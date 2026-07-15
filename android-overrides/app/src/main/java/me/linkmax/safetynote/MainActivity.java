@@ -54,9 +54,7 @@ public class MainActivity extends BridgeActivity {
     private long apkDownloadId = -1;
     private BroadcastReceiver downloadReceiver;
 
-    // 첨부파일 다운로드 추적 (DownloadManager — APK 전용으로만 사용)
-    // 첨부파일은 Thread 직접 다운로드 방식으로 변경
-    private long attachDownloadId = -1; // 미사용 (호환성 유지)
+    // 첨부파일 다운로드: Thread 직접 다운로드 방식 (DownloadManager 미사용)
 
     // 알림 채널 (첨부파일 열기 안내용)
     private static final String ATTACH_NOTIF_CHANNEL = "attach_open";
@@ -98,13 +96,10 @@ public class MainActivity extends BridgeActivity {
             @Override
             public void onReceive(Context context, Intent intent) {
                 long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                // APK 다운로드 완료만 처리 (첨부파일은 Thread 직접 다운로드 방식으로 변경됨)
                 if (id == apkDownloadId && id != -1) {
                     Log.d(TAG, "APK 다운로드 완료: id=" + id);
                     installDownloadedApk(id);
-                } else if (id == attachDownloadId && id != -1) {
-                    // BUG-011: 첨부파일 다운로드 완료 → 외부 앱으로 열기
-                    Log.d(TAG, "첨부파일 다운로드 완료: id=" + id);
-                    openDownloadedFile(id);
                 }
             }
         };
@@ -808,12 +803,8 @@ public class MainActivity extends BridgeActivity {
             Log.d(TAG, "openAttachment 브릿지 호출: url=" + attachUrl + " file=" + safeName);
 
             // @JavascriptInterface 는 백그라운드 스레드 → 메인 스레드에서 실행
-            runOnUiThread(() -> {
-                // attachFileName 을 미리 세팅 (openAttachmentExternally 내부에서도 덮어쓰지만
-                // 혹시 URL 파싱이 실패할 경우 대비)
-                attachFileName = safeName;
-                openAttachmentExternally(attachUrl);
-            });
+            // openAttachmentExternally() 내부에서 URL/파라미터로 파일명 직접 추출
+            runOnUiThread(() -> openAttachmentExternally(attachUrl));
         }
     }
 
