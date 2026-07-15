@@ -314,11 +314,22 @@ public class MainActivity extends BridgeActivity {
             );
             if (destFile.exists()) destFile.delete();
 
-            // ✅ 자체서명 인증서 대응: https → http 변환
+            // ✅ 자체서명 인증서 대응: NAS HTTPS → HTTP 내부 포트 변환
+            // - NAS: HTTPS 포트(3443)만 외부 노출, HTTP 포트(3444)는 내부 전용
+            // - DownloadManager는 WebView SSL 예외를 공유하지 않으므로 자체서명 인증서 신뢰 불가
+            // - 해결: https://...:3443 → http://...:3444 로 변환 (FCM 등록과 동일 방식)
+            // - GitHub 등 외부 공인 인증서 서버: https 그대로 유지
             String downloadUrl = url;
             if (downloadUrl.startsWith("https://")) {
-                downloadUrl = "http://" + downloadUrl.substring(8);
-                Log.d(TAG, "첨부파일: https → http 변환: " + downloadUrl);
+                boolean isExternalTrustedHost =
+                    downloadUrl.contains("github.com") ||
+                    downloadUrl.contains("githubusercontent.com");
+                if (!isExternalTrustedHost) {
+                    downloadUrl = "http://" + downloadUrl.substring(8);
+                    // HTTPS 전용 포트(3443) → HTTP 내부 포트(3444) 변환
+                    downloadUrl = downloadUrl.replaceAll(":3443(/|\\?|$)", ":3444$1");
+                    Log.d(TAG, "첨부파일: NAS URL 변환 → " + downloadUrl);
+                }
             }
 
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(downloadUrl));
@@ -329,6 +340,16 @@ public class MainActivity extends BridgeActivity {
             request.setDestinationUri(Uri.fromFile(destFile));
             request.setAllowedOverMetered(true);
             request.setAllowedOverRoaming(true);
+
+            // ✅ Authorization 헤더 추가: URL의 token 파라미터를 헤더로도 전달
+            // - 서버는 헤더 우선, 쿼리 파라미터 폴백 방식으로 인증 처리
+            // - DownloadManager가 HTTP 3444로 요청 시 헤더 인증도 함께 지원
+            Uri parsedUri = Uri.parse(downloadUrl);
+            String tokenParam = parsedUri.getQueryParameter("token");
+            if (tokenParam != null && !tokenParam.isEmpty()) {
+                request.addRequestHeader("Authorization", "Bearer " + tokenParam);
+                Log.d(TAG, "첨부파일 DownloadManager: Authorization 헤더 추가");
+            }
 
             DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
             attachDownloadId = dm.enqueue(request);
@@ -452,8 +473,11 @@ public class MainActivity extends BridgeActivity {
                     downloadUrl.contains("objects.githubusercontent.com") ||
                     downloadUrl.contains("releases.githubusercontent.com");
                 if (!isExternalTrustedHost) {
+                    // NAS 자체서명 인증서 대응: https → http 변환
                     downloadUrl = "http://" + downloadUrl.substring(8);
-                    Log.d(TAG, "NAS 자체서명 인증서 대응: https → http 변환: " + downloadUrl);
+                    // HTTPS 전용 포트(3443) → HTTP 내부 포트(3444) 변환 (FCM 등록과 동일)
+                    downloadUrl = downloadUrl.replaceAll(":3443(/|\\?|$)", ":3444$1");
+                    Log.d(TAG, "NAS URL 변환(APK): " + downloadUrl);
                 } else {
                     Log.d(TAG, "외부 공인 서버(GitHub 등): https 유지: " + downloadUrl);
                 }
@@ -468,6 +492,20 @@ public class MainActivity extends BridgeActivity {
             // HTTP 허용 (cleartext)
             request.setAllowedOverMetered(true);
             request.setAllowedOverRoaming(true);
+
+            // ✅ NAS URL인 경우 Authorization 헤더 추가 (JWT 인증)
+            // APK 다운로드 URL이 /api/dist/apk/download 형태인 경우 인증 필요
+            boolean isNasUrl = !downloadUrl.contains("github.com") &&
+                               !downloadUrl.contains("githubusercontent.com");
+            if (isNasUrl) {
+                android.content.SharedPreferences prefs =
+                    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                String jwt = prefs.getString(KEY_JWT, null);
+                if (jwt != null && !jwt.isEmpty()) {
+                    request.addRequestHeader("Authorization", "Bearer " + jwt);
+                    Log.d(TAG, "APK DownloadManager: Authorization 헤더 추가");
+                }
+            }
 
             DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
             apkDownloadId = dm.enqueue(request);
