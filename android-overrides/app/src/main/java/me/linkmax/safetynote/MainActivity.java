@@ -2,6 +2,10 @@ package me.linkmax.safetynote;
 
 import android.Manifest;
 import android.app.DownloadManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -20,6 +24,7 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
@@ -48,6 +53,10 @@ public class MainActivity extends BridgeActivity {
     private long attachDownloadId = -1;
     private String attachFileName  = "";
     private String attachMimeType  = "";
+
+    // 알림 채널 (첨부파일 열기 안내용)
+    private static final String ATTACH_NOTIF_CHANNEL = "attach_open";
+    private static final int    ATTACH_NOTIF_ID      = 2001;
 
     // ── 런타임 요청 권한 목록 ─────────────────────────────────────────────────
     private static final String[] REQUIRED_PERMISSIONS;
@@ -104,6 +113,17 @@ public class MainActivity extends BridgeActivity {
         } else {
             registerReceiver(downloadReceiver,
                 new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+        }
+
+        // 첨부파일 열기 알림 채널 생성 (Android 8.0+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(
+                ATTACH_NOTIF_CHANNEL, "첨부파일 열기",
+                NotificationManager.IMPORTANCE_HIGH);
+            ch.setDescription("첨부파일 다운로드 완료 후 열기 안내");
+            NotificationManager nm =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.createNotificationChannel(ch);
         }
 
         // ── WebViewClient: BridgeWebViewClient 상속 ───────────────────────────
@@ -364,8 +384,11 @@ public class MainActivity extends BridgeActivity {
     /**
      * DownloadManager 완료 후 파일을 외부 앱으로 열기
      *
-     * ✅ Android 7.0+ : FileProvider URI (file:// 직접 사용 금지)
-     * ✅ createChooser() : 외부 앱 선택 강제 (WebView 내부 열기 방지)
+     * ✅ Android 7.0+  : FileProvider URI 사용
+     * ✅ Android 10+   : 백그라운드 Activity 시작 제한 우회
+     *    - BroadcastReceiver 콜백은 백그라운드 컨텍스트
+     *    - runOnUiThread 로 메인 스레드 이동 후 startActivity
+     *    - 앱이 포그라운드면 즉시 열기, 백그라운드면 알림으로 안내
      */
     private void openDownloadedFile(long downloadId) {
         try {
@@ -399,36 +422,93 @@ public class MainActivity extends BridgeActivity {
                 return;
             }
 
-            Log.d(TAG, "첨부파일 열기: " + file.getAbsolutePath()
+            Log.d(TAG, "첨부파일 열기 준비: " + file.getAbsolutePath()
                 + " mime=" + attachMimeType);
 
-            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
-            viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
+            // FileProvider URI 생성 (Android 7.0+)
+            final Uri fileUri;
+            final String mime = attachMimeType;
+            final String fname = attachFileName;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                // Android 7.0+ : FileProvider 사용
-                Uri fileUri = FileProvider.getUriForFile(
+                fileUri = FileProvider.getUriForFile(
                     MainActivity.this,
                     getPackageName() + ".fileprovider",
                     file
                 );
-                viewIntent.setDataAndType(fileUri, attachMimeType);
-                viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } else {
-                viewIntent.setDataAndType(Uri.fromFile(file), attachMimeType);
+                fileUri = Uri.fromFile(file);
             }
 
-            // createChooser: 외부 앱 선택 강제 (WebView 내부 열기 방지)
-            Intent chooser = Intent.createChooser(viewIntent, "파일 열기");
-            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(chooser);
-            Log.d(TAG, "첨부파일 외부 앱 실행 완료");
+            // ✅ 메인 스레드에서 실행 (Android 10+ 백그라운드 Activity 시작 제한 우회)
+            runOnUiThread(() -> {
+                try {
+                    Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+                    viewIntent.setDataAndType(fileUri, mime);
+                    viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                    Intent chooser = Intent.createChooser(viewIntent, "" + fname + " 열기");
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                    // 앱이 포그라운드면 즉시 startActivity 시도
+                    try {
+                        startActivity(chooser);
+                        Log.d(TAG, "첨부파일 외부 앱 직접 실행 완료");
+                    } catch (Exception e1) {
+                        // 백그라운드 제한으로 실패 시 → 알림(Notification)으로 안내
+                        Log.w(TAG, "직접 실행 실패, 알림 방식으로 전환: " + e1.getMessage());
+                        showOpenFileNotification(fileUri, mime, fname);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "첨부파일 열기 실패(UI스레드): " + e.getMessage(), e);
+                    showOpenFileNotification(fileUri, mime, fname);
+                }
+            });
 
             // 다운로드 ID 초기화
             attachDownloadId = -1;
 
         } catch (Exception e) {
             Log.e(TAG, "첨부파일 열기 실패: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 파일 열기 알림 표시
+     * - Android 10+ 백그라운드 Activity 제한 시 폴백
+     * - 알림 탭 → 파일 뷰어 앱 실행
+     */
+    private void showOpenFileNotification(Uri fileUri, String mime, String fileName) {
+        try {
+            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+            viewIntent.setDataAndType(fileUri, mime);
+            viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(viewIntent, fileName + " 열기");
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pi = PendingIntent.getActivity(
+                this, ATTACH_NOTIF_ID, chooser, flags);
+
+            NotificationCompat.Builder builder =
+                new NotificationCompat.Builder(this, ATTACH_NOTIF_CHANNEL)
+                    .setSmallIcon(android.R.drawable.ic_menu_view)
+                    .setContentTitle("첨부파일 다운로드 완료")
+                    .setContentText(fileName + " — 탭하여 열기")
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .setContentIntent(pi);
+
+            NotificationManager nm =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(ATTACH_NOTIF_ID, builder.build());
+            Log.d(TAG, "첨부파일 열기 알림 표시: " + fileName);
+        } catch (Exception e) {
+            Log.e(TAG, "알림 표시 실패: " + e.getMessage(), e);
         }
     }
 
