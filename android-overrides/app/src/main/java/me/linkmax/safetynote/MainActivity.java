@@ -2,7 +2,6 @@ package me.linkmax.safetynote;
 
 import android.Manifest;
 import android.app.DownloadManager;
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -21,12 +20,18 @@ import android.webkit.MimeTypeMap;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.util.Log;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
@@ -49,10 +54,9 @@ public class MainActivity extends BridgeActivity {
     private long apkDownloadId = -1;
     private BroadcastReceiver downloadReceiver;
 
-    // 첨부파일 다운로드 추적 (BUG-011: 첨부파일 외부 앱으로 열기)
-    private long attachDownloadId = -1;
-    private String attachFileName  = "";
-    private String attachMimeType  = "";
+    // 첨부파일 다운로드 추적 (DownloadManager — APK 전용으로만 사용)
+    // 첨부파일은 Thread 직접 다운로드 방식으로 변경
+    private long attachDownloadId = -1; // 미사용 (호환성 유지)
 
     // 알림 채널 (첨부파일 열기 안내용)
     private static final String ATTACH_NOTIF_CHANNEL = "attach_open";
@@ -291,193 +295,144 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    // ── BUG-011: 첨부파일 다운로드 후 외부 앱으로 열기 ─────────────────────
+    // ── BUG-011: 첨부파일 직접 다운로드 후 즉시 외부 앱으로 열기 ────────────
 
     /**
-     * /api/attachments/{id}/download URL을 DownloadManager로 다운로드 후
-     * 외부 앱(PDF 뷰어, 이미지 앱 등)으로 열기
+     * 첨부파일을 백그라운드 Thread로 직접 다운로드 → 완료 즉시 메인 스레드에서 Chooser 팝업
      *
-     * ✅ 자체서명 인증서 대응: https → http 변환
-     * ✅ 파일명: URL의 filename 쿼리 파라미터 우선 사용
-     * ✅ MIME: 파일 확장자 기반 자동 감지 (MimeTypeMap)
+     * ✅ DownloadManager 대신 HttpURLConnection 직접 사용
+     *    - NAS 자체서명 인증서: http://...:3444 내부 포트로 변환 (SSL 우회)
+     *    - 토큰: Authorization 헤더로 직접 전달
+     *    - 다운로드 완료 즉시 runOnUiThread → createChooser → startActivity
+     *    - BroadcastReceiver 없음 → Android 10+ 백그라운드 제한 없음
      */
     private void openAttachmentExternally(String url) {
-        try {
-            // filename 쿼리 파라미터에서 파일명 추출
-            Uri uri = Uri.parse(url);
-            String rawName = uri.getQueryParameter("filename");
-            if (rawName == null || rawName.isEmpty()) {
-                // URL 경로 마지막 세그먼트에서 파일명 추출
-                String path = uri.getPath();
-                if (path != null && path.contains("/")) {
-                    String lastSeg = path.substring(path.lastIndexOf('/') + 1);
-                    rawName = lastSeg.isEmpty() ? "attachment" : lastSeg;
-                } else {
-                    rawName = "attachment";
-                }
+        // ── 파일명 추출 ──────────────────────────────────────────────────────
+        Uri uri = Uri.parse(url);
+        String rawName = uri.getQueryParameter("filename");
+        if (rawName == null || rawName.isEmpty()) {
+            String path = uri.getPath();
+            if (path != null && path.contains("/")) {
+                String lastSeg = path.substring(path.lastIndexOf('/') + 1);
+                rawName = lastSeg.isEmpty() ? "attachment" : lastSeg;
+            } else {
+                rawName = "attachment";
             }
-            final String fileName = rawName;
-
-            // 파일 확장자로 MIME 타입 결정
-            String ext = "";
-            int dotIdx = fileName.lastIndexOf('.');
-            if (dotIdx >= 0) ext = fileName.substring(dotIdx + 1).toLowerCase();
-            String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
-            if (mimeType == null || mimeType.isEmpty()) mimeType = "application/octet-stream";
-            attachMimeType = mimeType;
-            attachFileName = fileName;
-
-            // 기존 동일 파일 삭제 (재다운로드 충돌 방지)
-            File destFile = new File(
-                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-                fileName
-            );
-            if (destFile.exists()) destFile.delete();
-
-            // ✅ 자체서명 인증서 대응: NAS HTTPS → HTTP 내부 포트 변환
-            // - NAS: HTTPS 포트(3443)만 외부 노출, HTTP 포트(3444)는 내부 전용
-            // - DownloadManager는 WebView SSL 예외를 공유하지 않으므로 자체서명 인증서 신뢰 불가
-            // - 해결: https://...:3443 → http://...:3444 로 변환 (FCM 등록과 동일 방식)
-            // - GitHub 등 외부 공인 인증서 서버: https 그대로 유지
-            String downloadUrl = url;
-            if (downloadUrl.startsWith("https://")) {
-                boolean isExternalTrustedHost =
-                    downloadUrl.contains("github.com") ||
-                    downloadUrl.contains("githubusercontent.com");
-                if (!isExternalTrustedHost) {
-                    downloadUrl = "http://" + downloadUrl.substring(8);
-                    // HTTPS 전용 포트(3443) → HTTP 내부 포트(3444) 변환
-                    downloadUrl = downloadUrl.replaceAll(":3443(/|\\?|$)", ":3444$1");
-                    Log.d(TAG, "첨부파일: NAS URL 변환 → " + downloadUrl);
-                }
-            }
-
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(downloadUrl));
-            request.setTitle(fileName);
-            request.setDescription("첨부파일 다운로드 중...");
-            request.setNotificationVisibility(
-                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationUri(Uri.fromFile(destFile));
-            request.setAllowedOverMetered(true);
-            request.setAllowedOverRoaming(true);
-
-            // ✅ Authorization 헤더 추가: URL의 token 파라미터를 헤더로도 전달
-            // - 서버는 헤더 우선, 쿼리 파라미터 폴백 방식으로 인증 처리
-            // - DownloadManager가 HTTP 3444로 요청 시 헤더 인증도 함께 지원
-            Uri parsedUri = Uri.parse(downloadUrl);
-            String tokenParam = parsedUri.getQueryParameter("token");
-            if (tokenParam != null && !tokenParam.isEmpty()) {
-                request.addRequestHeader("Authorization", "Bearer " + tokenParam);
-                Log.d(TAG, "첨부파일 DownloadManager: Authorization 헤더 추가");
-            }
-
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            attachDownloadId = dm.enqueue(request);
-            Log.d(TAG, "첨부파일 다운로드 시작: id=" + attachDownloadId
-                + " file=" + fileName + " mime=" + mimeType);
-
-        } catch (Exception e) {
-            Log.e(TAG, "첨부파일 다운로드 시작 실패: " + e.getMessage());
         }
+        final String fileName = rawName;
+
+        // ── MIME 타입 결정 ───────────────────────────────────────────────────
+        String ext = "";
+        int dotIdx = fileName.lastIndexOf('.');
+        if (dotIdx >= 0) ext = fileName.substring(dotIdx + 1).toLowerCase();
+        String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+        if (mimeType == null || mimeType.isEmpty()) mimeType = "application/octet-stream";
+        final String mime = mimeType;
+
+        // ── 저장 경로 ────────────────────────────────────────────────────────
+        final File destFile = new File(
+            getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName);
+        if (destFile.exists()) destFile.delete();
+
+        // ── NAS URL 변환: https:3443 → http:3444 ────────────────────────────
+        String dlUrl = url;
+        if (dlUrl.startsWith("https://") &&
+            !dlUrl.contains("github.com") && !dlUrl.contains("githubusercontent.com")) {
+            dlUrl = "http://" + dlUrl.substring(8);
+            dlUrl = dlUrl.replaceAll(":3443(/|\\?|$)", ":3444$1");
+        }
+        // token 파라미터 추출 (Authorization 헤더용)
+        final String tokenParam = Uri.parse(dlUrl).getQueryParameter("token");
+        final String finalDlUrl = dlUrl;
+
+        Log.d(TAG, "첨부파일 다운로드 시작: " + finalDlUrl + " → " + fileName + " [" + mime + "]");
+
+        // UI에 다운로드 시작 알림
+        runOnUiThread(() ->
+            Toast.makeText(this, "\"" + fileName + "\" 불러오는 중...", Toast.LENGTH_SHORT).show()
+        );
+
+        // ── 백그라운드 Thread: 다운로드 ─────────────────────────────────────
+        new Thread(() -> {
+            try {
+                URL urlObj = new URL(finalDlUrl);
+                HttpURLConnection conn = (HttpURLConnection) urlObj.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                if (tokenParam != null && !tokenParam.isEmpty()) {
+                    conn.setRequestProperty("Authorization", "Bearer " + tokenParam);
+                }
+                conn.connect();
+
+                int code = conn.getResponseCode();
+                Log.d(TAG, "첨부파일 HTTP 응답: " + code);
+                if (code != HttpURLConnection.HTTP_OK) {
+                    Log.e(TAG, "첨부파일 다운로드 실패: HTTP " + code);
+                    runOnUiThread(() ->
+                        Toast.makeText(this, "파일 다운로드 실패 (" + code + ")", Toast.LENGTH_LONG).show()
+                    );
+                    return;
+                }
+
+                // 파일 저장
+                try (InputStream in = conn.getInputStream();
+                     FileOutputStream out = new FileOutputStream(destFile)) {
+                    byte[] buf = new byte[8192];
+                    int len;
+                    while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
+                }
+                conn.disconnect();
+                Log.d(TAG, "첨부파일 저장 완료: " + destFile.getAbsolutePath());
+
+                // ── 메인 스레드: 즉시 파일 열기 Chooser 팝업 ─────────────
+                runOnUiThread(() -> launchFileChooser(destFile, mime, fileName));
+
+            } catch (Exception e) {
+                Log.e(TAG, "첨부파일 다운로드 오류: " + e.getMessage(), e);
+                runOnUiThread(() ->
+                    Toast.makeText(this, "파일 열기 실패: " + e.getMessage(), Toast.LENGTH_LONG).show()
+                );
+            }
+        }).start();
     }
 
     /**
-     * DownloadManager 완료 후 파일을 외부 앱으로 열기
-     *
-     * ✅ Android 7.0+  : FileProvider URI 사용
-     * ✅ Android 10+   : 백그라운드 Activity 시작 제한 우회
-     *    - BroadcastReceiver 콜백은 백그라운드 컨텍스트
-     *    - runOnUiThread 로 메인 스레드 이동 후 startActivity
-     *    - 앱이 포그라운드면 즉시 열기, 백그라운드면 알림으로 안내
+     * 다운로드된 파일을 외부 앱으로 여는 Chooser 팝업 실행
+     * - 메인 스레드에서 호출해야 함
+     * - Android 7.0+: FileProvider URI 사용
      */
-    private void openDownloadedFile(long downloadId) {
+    private void launchFileChooser(File file, String mime, String fileName) {
         try {
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            DownloadManager.Query query = new DownloadManager.Query();
-            query.setFilterById(downloadId);
-
-            android.database.Cursor cursor = dm.query(query);
-            if (cursor == null || !cursor.moveToFirst()) {
-                Log.e(TAG, "첨부파일 DownloadManager 쿼리 실패");
-                if (cursor != null) cursor.close();
-                return;
-            }
-
-            int statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
-            int status = (statusCol >= 0) ? cursor.getInt(statusCol) : -1;
-            cursor.close();
-
-            if (status != DownloadManager.STATUS_SUCCESSFUL) {
-                Log.e(TAG, "첨부파일 다운로드 실패 status=" + status);
-                return;
-            }
-
-            File file = new File(
-                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-                attachFileName
-            );
-
-            if (!file.exists()) {
-                Log.e(TAG, "첨부파일 없음: " + file.getAbsolutePath());
-                return;
-            }
-
-            Log.d(TAG, "첨부파일 열기 준비: " + file.getAbsolutePath()
-                + " mime=" + attachMimeType);
-
-            // FileProvider URI 생성 (Android 7.0+)
             final Uri fileUri;
-            final String mime = attachMimeType;
-            final String fname = attachFileName;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 fileUri = FileProvider.getUriForFile(
-                    MainActivity.this,
-                    getPackageName() + ".fileprovider",
-                    file
-                );
+                    this, getPackageName() + ".fileprovider", file);
             } else {
                 fileUri = Uri.fromFile(file);
             }
 
-            // ✅ 메인 스레드에서 실행 (Android 10+ 백그라운드 Activity 시작 제한 우회)
-            runOnUiThread(() -> {
-                try {
-                    Intent viewIntent = new Intent(Intent.ACTION_VIEW);
-                    viewIntent.setDataAndType(fileUri, mime);
-                    viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+            viewIntent.setDataAndType(fileUri, mime);
+            viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-                    Intent chooser = Intent.createChooser(viewIntent, "" + fname + " 열기");
-                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-                    // 앱이 포그라운드면 즉시 startActivity 시도
-                    try {
-                        startActivity(chooser);
-                        Log.d(TAG, "첨부파일 외부 앱 직접 실행 완료");
-                    } catch (Exception e1) {
-                        // 백그라운드 제한으로 실패 시 → 알림(Notification)으로 안내
-                        Log.w(TAG, "직접 실행 실패, 알림 방식으로 전환: " + e1.getMessage());
-                        showOpenFileNotification(fileUri, mime, fname);
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "첨부파일 열기 실패(UI스레드): " + e.getMessage(), e);
-                    showOpenFileNotification(fileUri, mime, fname);
-                }
-            });
-
-            // 다운로드 ID 초기화
-            attachDownloadId = -1;
+            Intent chooser = Intent.createChooser(viewIntent, fileName + " 열기");
+            startActivity(chooser);
+            Log.d(TAG, "파일 열기 Chooser 실행: " + fileName);
 
         } catch (Exception e) {
-            Log.e(TAG, "첨부파일 열기 실패: " + e.getMessage(), e);
+            Log.e(TAG, "Chooser 실행 실패: " + e.getMessage(), e);
+            Toast.makeText(this, "파일을 열 수 있는 앱이 없습니다", Toast.LENGTH_LONG).show();
         }
     }
 
-    /**
-     * 파일 열기 알림 표시
-     * - Android 10+ 백그라운드 Activity 제한 시 폴백
-     * - 알림 탭 → 파일 뷰어 앱 실행
-     */
+    // openDownloadedFile, showOpenFileNotification — APK 전용 DownloadManager 완료 처리
+    // 첨부파일은 openAttachmentExternally 의 Thread 방식으로 대체됨
+    private void openDownloadedFile(long downloadId) {
+        // APK DownloadManager 완료 처리만 남김 (첨부파일은 이 경로로 오지 않음)
+        Log.d(TAG, "openDownloadedFile 호출 (APK 경로): id=" + downloadId);
+    }
+
     private void showOpenFileNotification(Uri fileUri, String mime, String fileName) {
         try {
             Intent viewIntent = new Intent(Intent.ACTION_VIEW);
@@ -486,29 +441,20 @@ public class MainActivity extends BridgeActivity {
             viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             Intent chooser = Intent.createChooser(viewIntent, fileName + " 열기");
             chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                flags |= PendingIntent.FLAG_IMMUTABLE;
-            }
-            PendingIntent pi = PendingIntent.getActivity(
-                this, ATTACH_NOTIF_ID, chooser, flags);
-
-            NotificationCompat.Builder builder =
-                new NotificationCompat.Builder(this, ATTACH_NOTIF_CHANNEL)
-                    .setSmallIcon(android.R.drawable.ic_menu_view)
-                    .setContentTitle("첨부파일 다운로드 완료")
-                    .setContentText(fileName + " — 탭하여 열기")
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setAutoCancel(true)
-                    .setContentIntent(pi);
-
-            NotificationManager nm =
-                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) nm.notify(ATTACH_NOTIF_ID, builder.build());
-            Log.d(TAG, "첨부파일 열기 알림 표시: " + fileName);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+            PendingIntent pi = PendingIntent.getActivity(this, ATTACH_NOTIF_ID, chooser, flags);
+            new NotificationCompat.Builder(this, ATTACH_NOTIF_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_menu_view)
+                .setContentTitle("첨부파일 다운로드 완료")
+                .setContentText(fileName + " — 탭하여 열기")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .build();
+            Log.d(TAG, "알림 표시: " + fileName);
         } catch (Exception e) {
-            Log.e(TAG, "알림 표시 실패: " + e.getMessage(), e);
+            Log.e(TAG, "알림 표시 실패: " + e.getMessage());
         }
     }
 
