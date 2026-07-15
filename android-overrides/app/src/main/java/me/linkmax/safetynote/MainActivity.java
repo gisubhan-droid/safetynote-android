@@ -717,6 +717,40 @@ public class MainActivity extends BridgeActivity {
             // @JavascriptInterface 는 백그라운드 스레드 — DownloadManager 는 메인 스레드 필요
             runOnUiThread(() -> startApkDownload(apkUrl));
         }
+
+        /**
+         * 첨부파일 외부 앱으로 열기 — JS→Java 직접 브릿지
+         *
+         * [BUG-014 Fix]
+         * window.open(url, '_system') 은 Capacitor 6 에서 shouldOverrideUrlLoading 을
+         * 트리거하지 않아 첨부파일 다운로드가 동작하지 않음.
+         * → JS 에서 window.SafetyNoteApp.openAttachment(url, fileName) 직접 호출
+         * → UI 스레드에서 openAttachmentExternally() 실행 (DownloadManager)
+         *
+         * JS: window.SafetyNoteApp.openAttachment(absoluteUrl, fileName)
+         *
+         * @param attachUrl  절대 URL (https://서버/api/attachments/{id}/download?token=...)
+         * @param fileName   파일명 (확장자 포함, MIME 감지 및 저장에 사용)
+         */
+        @JavascriptInterface
+        public void openAttachment(String attachUrl, String fileName) {
+            if (attachUrl == null || attachUrl.isEmpty()) {
+                Log.w(TAG, "openAttachment: 빈 URL — 무시");
+                return;
+            }
+            // fileName 이 null 이면 URL 에서 추출
+            final String safeName = (fileName != null && !fileName.isEmpty())
+                ? fileName : "attachment";
+            Log.d(TAG, "openAttachment 브릿지 호출: url=" + attachUrl + " file=" + safeName);
+
+            // @JavascriptInterface 는 백그라운드 스레드 → 메인 스레드에서 실행
+            runOnUiThread(() -> {
+                // attachFileName 을 미리 세팅 (openAttachmentExternally 내부에서도 덮어쓰지만
+                // 혹시 URL 파싱이 실패할 경우 대비)
+                attachFileName = safeName;
+                openAttachmentExternally(attachUrl);
+            });
+        }
     }
 
     // ── FCM 토큰 서버 등록 (로그인 직후 보완용) ──────────────────────────────
