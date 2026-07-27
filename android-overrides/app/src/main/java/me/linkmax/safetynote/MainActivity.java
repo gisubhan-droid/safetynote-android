@@ -6,6 +6,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -15,6 +16,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebResourceRequest;
@@ -30,6 +32,7 @@ import androidx.core.content.FileProvider;
 
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
@@ -805,6 +808,172 @@ public class MainActivity extends BridgeActivity {
             // @JavascriptInterface 는 백그라운드 스레드 → 메인 스레드에서 실행
             // openAttachmentExternally() 내부에서 URL/파라미터로 파일명 직접 추출
             runOnUiThread(() -> openAttachmentExternally(attachUrl));
+        }
+
+        /**
+         * 사진/이미지를 Android 갤러리(MediaStore)에 직접 저장 — JS→Java 직접 브릿지
+         *
+         * [BUG-179 Fix]
+         * downloadApk() 는 APK 전용으로 "Safety NOTE 업데이트" 알림을 띄우고
+         * DownloadManager → 갤러리 자동 인식이 보장되지 않음.
+         * → 이미지 전용 브릿지: HttpURLConnection 백그라운드 다운로드
+         *   + Android 10+ : MediaStore.Images.Media → 갤러리 직접 저장
+         *   + Android 9-  : Environment.DIRECTORY_PICTURES + MediaScannerConnection
+         *
+         * JS: window.SafetyNoteApp.saveImageToGallery(absoluteUrl, fileName)
+         *
+         * @param imageUrl   절대 URL (https://서버/api/photos/{id}/img?dl=1&token=...)
+         * @param fileName   파일명 (확장자 포함, .jpg/.png 권장)
+         */
+        @JavascriptInterface
+        public void saveImageToGallery(String imageUrl, String fileName) {
+            if (imageUrl == null || imageUrl.isEmpty()) {
+                Log.w(TAG, "saveImageToGallery: 빈 URL — 무시");
+                return;
+            }
+            final String safeName = (fileName != null && !fileName.isEmpty())
+                ? fileName : ("photo_" + System.currentTimeMillis() + ".jpg");
+
+            Log.d(TAG, "saveImageToGallery 브릿지 호출: url=" + imageUrl + " file=" + safeName);
+
+            // UI 토스트: 시작 알림
+            runOnUiThread(() ->
+                Toast.makeText(MainActivity.this,
+                    "\"" + safeName + "\" 갤러리에 저장 중...", Toast.LENGTH_SHORT).show()
+            );
+
+            // 백그라운드 Thread: 다운로드 → MediaStore 저장
+            new Thread(() -> {
+                try {
+                    // ── NAS URL 변환: https:3443 → http:3444 ────────────────
+                    String dlUrl = imageUrl;
+                    if (dlUrl.startsWith("https://") &&
+                        !dlUrl.contains("github.com") &&
+                        !dlUrl.contains("githubusercontent.com")) {
+                        dlUrl = "http://" + dlUrl.substring(8);
+                        dlUrl = dlUrl.replaceAll(":3443(/|\\?|$)", ":3444$1");
+                    }
+
+                    // token 파라미터 추출 (Authorization 헤더용)
+                    final String tokenParam = Uri.parse(dlUrl).getQueryParameter("token");
+
+                    Log.d(TAG, "saveImageToGallery 다운로드: " + dlUrl);
+
+                    // ── HttpURLConnection 직접 다운로드 ─────────────────────
+                    URL urlObj = new URL(dlUrl);
+                    HttpURLConnection conn = (HttpURLConnection) urlObj.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(30000);
+                    if (tokenParam != null && !tokenParam.isEmpty()) {
+                        conn.setRequestProperty("Authorization", "Bearer " + tokenParam);
+                    }
+                    conn.connect();
+
+                    int code = conn.getResponseCode();
+                    if (code != HttpURLConnection.HTTP_OK) {
+                        Log.e(TAG, "saveImageToGallery 다운로드 실패: HTTP " + code);
+                        runOnUiThread(() ->
+                            Toast.makeText(MainActivity.this,
+                                "사진 저장 실패 (HTTP " + code + ")", Toast.LENGTH_LONG).show()
+                        );
+                        return;
+                    }
+
+                    // MIME 타입 결정
+                    String ext = "";
+                    int dotIdx = safeName.lastIndexOf('.');
+                    if (dotIdx >= 0) ext = safeName.substring(dotIdx + 1).toLowerCase();
+                    String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                    if (mimeType == null || mimeType.isEmpty()) mimeType = "image/jpeg";
+
+                    // ── Android 10+ (API 29+): MediaStore 직접 삽입 ─────────
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ContentValues values = new ContentValues();
+                        values.put(MediaStore.Images.Media.DISPLAY_NAME, safeName);
+                        values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+                        values.put(MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES + "/SafetyNOTE");
+                        values.put(MediaStore.Images.Media.IS_PENDING, 1);
+
+                        Uri collection = MediaStore.Images.Media.getContentUri(
+                            MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                        Uri itemUri = getContentResolver().insert(collection, values);
+
+                        if (itemUri == null) {
+                            Log.e(TAG, "saveImageToGallery: MediaStore insert 실패");
+                            runOnUiThread(() ->
+                                Toast.makeText(MainActivity.this,
+                                    "갤러리 저장 실패 (MediaStore)", Toast.LENGTH_LONG).show()
+                            );
+                            conn.disconnect();
+                            return;
+                        }
+
+                        try (InputStream in = conn.getInputStream();
+                             OutputStream out = getContentResolver().openOutputStream(itemUri)) {
+                            byte[] buf = new byte[8192];
+                            int len;
+                            while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
+                        }
+
+                        values.clear();
+                        values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        getContentResolver().update(itemUri, values, null, null);
+
+                        Log.d(TAG, "saveImageToGallery 완료 (MediaStore Q+): " + itemUri);
+
+                    } else {
+                        // ── Android 9 이하: 파일 저장 후 MediaScanner 실행 ──
+                        File picturesDir = new File(
+                            Environment.getExternalStoragePublicDirectory(
+                                Environment.DIRECTORY_PICTURES), "SafetyNOTE");
+                        if (!picturesDir.exists()) picturesDir.mkdirs();
+
+                        File destFile = new File(picturesDir, safeName);
+                        try (InputStream in = conn.getInputStream();
+                             FileOutputStream out = new FileOutputStream(destFile)) {
+                            byte[] buf = new byte[8192];
+                            int len;
+                            while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
+                        }
+
+                        // MediaScanner 실행 → 갤러리 즉시 인식
+                        final String finalMime = mimeType;
+                        android.media.MediaScannerConnection.scanFile(
+                            MainActivity.this,
+                            new String[]{ destFile.getAbsolutePath() },
+                            new String[]{ finalMime },
+                            (path, uri) -> Log.d(TAG, "MediaScanner 완료: " + path)
+                        );
+                        Log.d(TAG, "saveImageToGallery 완료 (파일+MediaScanner): "
+                            + destFile.getAbsolutePath());
+                    }
+
+                    conn.disconnect();
+
+                    // ── UI 토스트: 완료 알림 ────────────────────────────────
+                    runOnUiThread(() ->
+                        Toast.makeText(MainActivity.this,
+                            "\"" + safeName + "\" 갤러리에 저장되었습니다.",
+                            Toast.LENGTH_SHORT).show()
+                    );
+
+                    // ── WebView JS 콜백: 완료 알림 ──────────────────────────
+                    getBridge().getWebView().post(() ->
+                        getBridge().getWebView().evaluateJavascript(
+                            "if(window.toast) window.toast('\"" + safeName
+                                + "\" 갤러리에 저장 완료.', 'success');", null)
+                    );
+
+                } catch (Exception e) {
+                    Log.e(TAG, "saveImageToGallery 오류: " + e.getMessage(), e);
+                    runOnUiThread(() ->
+                        Toast.makeText(MainActivity.this,
+                            "갤러리 저장 오류: " + e.getMessage(), Toast.LENGTH_LONG).show()
+                    );
+                }
+            }).start();
         }
     }
 
