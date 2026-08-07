@@ -8,6 +8,8 @@ import android.content.Intent;
 import android.os.Build;
 import android.util.Log;
 
+import java.util.Map;
+
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 
@@ -92,13 +94,13 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         if (body  == null) body  = "";
 
         Log.d(TAG, "알림 표시: " + title + " / " + body);
-        showNotification(title, body);
+        showNotification(title, body, remoteMessage.getData());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 알림 표시
+    // 알림 표시 — FCM data 페이로드를 Intent Extra에 담아 화면 이동 지원
     // ─────────────────────────────────────────────────────────────────────────
-    private void showNotification(String title, String body) {
+    private void showNotification(String title, String body, Map<String, String> data) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
 
@@ -114,11 +116,19 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             nm.createNotificationChannel(channel);
         }
 
-        // 탭 시 앱 실행
+        // 탭 시 앱 실행 — FCM data(type, ref_type, ref_id)를 Intent Extra에 담아 전달
         Intent tapIntent = new Intent(this, MainActivity.class);
         tapIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (data != null) {
+            if (data.containsKey("type"))     tapIntent.putExtra("fcm_type",     data.get("type"));
+            if (data.containsKey("ref_type")) tapIntent.putExtra("fcm_ref_type", data.get("ref_type"));
+            if (data.containsKey("ref_id"))   tapIntent.putExtra("fcm_ref_id",   data.get("ref_id"));
+            Log.d(TAG, "FCM Intent Extra 설정: type=" + data.get("type")
+                + " ref_type=" + data.get("ref_type")
+                + " ref_id=" + data.get("ref_id"));
+        }
         PendingIntent pendingIntent = PendingIntent.getActivity(
-            this, 0, tapIntent,
+            this, (int) System.currentTimeMillis(), tapIntent,
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
                 : PendingIntent.FLAG_UPDATE_CURRENT

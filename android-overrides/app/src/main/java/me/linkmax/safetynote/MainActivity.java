@@ -80,6 +80,11 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // ── FCM 알림 탭으로 앱 종료 상태에서 실행 시 처리 ─────────────────────
+        // super.onCreate() 직후 → WebView 초기화 전에 Intent만 저장해 두고,
+        // WebView 로딩 완료 후 실행은 handleFcmIntent 내부의 postDelayed로 처리
+        handleFcmIntent(getIntent());
+
         // 권한 요청
         requestMissingPermissions();
 
@@ -642,6 +647,86 @@ public class MainActivity extends BridgeActivity {
                 getBridge().getWebView().evaluateJavascript(
                     "if(window.onApkDownloadFailed) window.onApkDownloadFailed();", null)
             );
+        }
+    }
+
+    // ── FCM 알림 탭 처리: 앱 실행 중 알림 탭 ─────────────────────────────────
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleFcmIntent(intent);
+    }
+
+    /**
+     * FCM 알림 탭 시 화면 이동 처리
+     *
+     * - 앱 종료 상태: onCreate() 에서 호출 — WebView 미준비이므로 1500ms 지연 후 JS 실행
+     * - 앱 실행 중:   onNewIntent() 에서 호출 — WebView 준비됨, 800ms 지연으로 충분
+     *
+     * Intent Extra:
+     *   fcm_type     — 알림 유형 (task_status, sign_request, tbm_completed 등)
+     *   fcm_ref_type — 참조 대상 유형 (task, tbm, education 등)
+     *   fcm_ref_id   — 참조 대상 ID
+     *
+     * JS window._navigateByNotif({type, ref_type, ref_id}) 호출로 화면 이동
+     */
+    private void handleFcmIntent(Intent intent) {
+        if (intent == null) return;
+        final String type    = intent.getStringExtra("fcm_type");
+        final String refType = intent.getStringExtra("fcm_ref_type");
+        final String refId   = intent.getStringExtra("fcm_ref_id");
+        if (type == null || type.isEmpty()) return;
+
+        Log.d(TAG, "handleFcmIntent: type=" + type + " ref_type=" + refType + " ref_id=" + refId);
+
+        // onCreate()에서 호출 시 WebView가 아직 준비되지 않아 1500ms 대기
+        // onNewIntent()에서 호출 시 앱이 이미 실행 중이므로 800ms 대기로 충분
+        // 구분 방법: onCreate 중에는 getBridge().getWebView().getUrl()이 null
+        final long delayMs;
+        try {
+            String currentUrl = getBridge().getWebView().getUrl();
+            delayMs = (currentUrl == null || currentUrl.isEmpty()) ? 1500L : 800L;
+        } catch (Exception e) {
+            // getBridge() 미준비 상태 — 1500ms 대기
+            Log.w(TAG, "handleFcmIntent: bridge 미준비, 1500ms 대기");
+            getBridge().getWebView().postDelayed(new Runnable() {
+                @Override public void run() {
+                    executeNavigateJs(type, refType, refId);
+                }
+            }, 1500);
+            return;
+        }
+
+        getBridge().getWebView().postDelayed(new Runnable() {
+            @Override public void run() {
+                executeNavigateJs(type, refType, refId);
+            }
+        }, delayMs);
+    }
+
+    /**
+     * WebView에서 _navigateByNotif JS 함수 실행
+     */
+    private void executeNavigateJs(String type, String refType, String refId) {
+        try {
+            // JS 인젝션 공격 방지: 단순 영문자/숫자/_ 외 문자 제거
+            final String safeType    = (type    != null ? type    : "").replaceAll("[^a-zA-Z0-9_]", "");
+            final String safeRefType = (refType != null ? refType : "").replaceAll("[^a-zA-Z0-9_]", "");
+            final String safeRefId   = (refId   != null ? refId   : "").replaceAll("[^a-zA-Z0-9_\\-]", "");
+
+            final String js = "if(window._navigateByNotif){"
+                + "window._navigateByNotif({"
+                + "type:'" + safeType + "',"
+                + "ref_type:'" + safeRefType + "',"
+                + "ref_id:'" + safeRefId + "'"
+                + "});"
+                + "}";
+
+            Log.d(TAG, "executeNavigateJs: " + js);
+            getBridge().getWebView().evaluateJavascript(js, null);
+        } catch (Exception e) {
+            Log.e(TAG, "executeNavigateJs 오류: " + e.getMessage());
         }
     }
 
