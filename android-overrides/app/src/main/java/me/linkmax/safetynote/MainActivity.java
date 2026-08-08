@@ -16,6 +16,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
@@ -671,8 +673,9 @@ public class MainActivity extends BridgeActivity {
     // ── onResume: pendingFcmIntent 처리 ───────────────────────────────────────
     // onCreate(앱 종료 상태 탭) / onNewIntent(실행 중 탭) 모두 여기서 최종 처리.
     // onResume 시점에는 Capacitor Bridge + WebView가 반드시 준비된 상태.
+    // ⚠️ BridgeActivity.onResume()이 public이므로 반드시 public으로 선언해야 함.
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         if (pendingFcmIntent != null) {
             final Intent fcmIntent = pendingFcmIntent;
