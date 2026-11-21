@@ -22,6 +22,8 @@
 #   SN_HEALTH_PATH  JSON 점검 경로 (기본 /api/diagnostics/server-version)
 #   SN_PM2_APP      PM2 앱 이름 (기본 safetynote)
 #   SN_PM2_BIN      pm2 실행 파일 경로 (기본 자동 탐색)
+#   SN_BOOT_LOG     부팅 작업 로그 (기본 /var/log/safetynote-boot.log)
+#   SN_WATCHDOG_LOG watchdog 로그 (기본 /var/log/safetynote-watchdog.log)
 #   SN_LOG          로그 파일 (기본 /var/log/safetynote-healthcheck.log, 불가 시 /tmp)
 # ============================================================
 
@@ -46,6 +48,7 @@ LOG_FILE="${SN_LOG:-/var/log/safetynote-healthcheck.log}"
 DATA_DIRS="${SN_DATA_DIRS:-$VOLDIR/safetynote $VOLDIR/safetynote_data}"
 SNAPSHOT_DIRS="${SN_SNAPSHOT_DIRS:-$VOLDIR/safetynote/#snapshot $VOLDIR/safetynote_data/#snapshot}"
 CURL_TIMEOUT=8
+WATCHDOG_LOG="${SN_WATCHDOG_LOG:-/var/log/safetynote-watchdog.log}"
 
 # DSM 작업 스케줄러는 PATH 가 짧으므로 Node/PM2 경로를 직접 추가
 for n in Node.js_v18 Node.js_v20; do
@@ -110,11 +113,13 @@ command -v curl >/dev/null 2>&1 || fail "curl 명령이 없어 HTTP 점검 불�
 head1 "1. 시스템 부팅 정보"
 if [ -r /proc/uptime ]; then
   UP_SEC=$(cut -d. -f1 /proc/uptime); UP_MIN=$((UP_SEC/60))
-  BOOT_AT=$(date -d "@$(( $(date +%s) - UP_SEC ))" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "?")
+  BOOT_EPOCH=$(( $(date +%s) - UP_SEC ))
+  BOOT_AT=$(date -d "@${BOOT_EPOCH}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "?")
   ok "마지막 부팅: ${BOOT_AT} (경과 ${UP_MIN}분 / $((UP_MIN/60))시간)"
   [ "$UP_MIN" -lt 10 ] && info "방금 재부팅된 상태입니다. 서버가 아직 올라오는 중일 수 있습니다 (--wait 300 권장)."
 else
-  UP_MIN=99999; warn "/proc/uptime 을 읽을 수 없어 부팅 시각 확인 불가"
+  UP_SEC=0; UP_MIN=99999; BOOT_EPOCH=0; BOOT_AT="?"
+  warn "/proc/uptime 을 읽을 수 없어 부팅 시각 확인 불가"
 fi
 
 # ---------- 2. 서버 기동 대기 (옵션) ----------
@@ -163,7 +168,18 @@ else
       else fail "${pn}: 상태 '${pst}' (online 아님)"; fi
       [ "${prs:-0}" -ge 5 ] && warn "${pn}: 재시작 ${prs}회 — 반복 crash 가능성. pm2 logs ${pn} --nostream --lines 50"
       # 부팅 직후인데 가동시간이 부팅 경과보다 훨씬 길면 → 재부팅과 무관하게 유지된 프로세스
-      [ "$pst" = "online" ] && [ "$pup" -gt $((UP_SEC + 120)) ] 2>/dev/null && info "참고: 가동시간이 부팅 경과보다 김 (시스템 재부팅 아님, 수동 재시작 등)"
+      # 서버 프로세스가 부팅 후 얼마 만에 시작됐는지 (pm2 가동시간은 재시작하면 0 으로 초기화됨)
+      if [ "$pst" = "online" ] && [ "$UP_SEC" -gt 0 ]; then
+        START_OFFSET=$((UP_SEC - pup))
+        if [ "$START_OFFSET" -lt 0 ]; then
+          info "참고: 가동시간이 부팅 경과보다 김 (시계 변경 등) — 판단 불가"
+        elif [ "$START_OFFSET" -le 600 ] && [ "${prs:-0}" -eq 0 ]; then
+          ok "부팅 후 ${START_OFFSET}초 만에 서버가 기동됨 (재시작 0회 → 부팅 자동기동 성공으로 판단)"
+        else
+          info "서버 프로세스는 부팅 후 $((START_OFFSET/60))분 뒤에 (재)시작됨 (재시작 ${prs}회)"
+          info "→ 수동 재시작/업데이트/watchdog 복구일 수 있어 '부팅 자동기동 성공'으로 판단할 수 없음 (재부팅 시험으로 확인 필요)"
+        fi
+      fi
     fi
     # 비상복구 서버(선택): 있으면 상태만 표시
     REC=$(echo "$PM2_LIST" | awk -F'|' '$1 ~ /recovery/{print; exit}')
@@ -181,10 +197,19 @@ else
   warn "$DUMP 없음/비어 있음 → 'pm2 save' 필요 (재부팅 시 자동기동 불가)"
 fi
 BOOTLOG=""
-for f in /var/log/safetynote-boot.log "$ROOT/safetynote-boot.log"; do [ -f "$f" ] && BOOTLOG="$f" && break; done
+for f in "${SN_BOOT_LOG:-}" /var/log/safetynote-boot.log "$ROOT/safetynote-boot.log"; do
+  [ -n "$f" ] && [ -f "$f" ] && BOOTLOG="$f" && break
+done
 if [ -n "$BOOTLOG" ]; then
-  ok "부팅 작업 로그: $BOOTLOG (수정 $(date -r "$BOOTLOG" '+%m-%d %H:%M' 2>/dev/null))"
-  tail -n 3 "$BOOTLOG" 2>/dev/null | while IFS= read -r l; do info "│ $l"; done
+  BL_EPOCH=$(date -r "$BOOTLOG" +%s 2>/dev/null || echo 0)
+  BL_TIME=$(date -r "$BOOTLOG" '+%m-%d %H:%M' 2>/dev/null)
+  if [ "$BOOT_EPOCH" -gt 0 ] && [ "$BL_EPOCH" -ge $((BOOT_EPOCH - 60)) ]; then
+    ok "부팅 작업이 이번 부팅 후 로그를 남김: $BOOTLOG (${BL_TIME})"
+    tail -n 3 "$BOOTLOG" 2>/dev/null | while IFS= read -r l; do info "│ $l"; done
+  else
+    info "부팅 작업 로그(${BL_TIME})가 이번 부팅(${BOOT_AT})보다 오래됨 → 이번 부팅에서는 부팅 작업이 로그를 남기지 않았습니다."
+    info "서버가 다른 경로(watchdog 등)로 올라왔는지 8번 항목과 함께 확인하세요."
+  fi
 else
   info "safetynote-boot.log 없음 — 'SafetyNOTE Bootin Start' 작업 로그 경로가 다르면 무시"
 fi
@@ -260,11 +285,27 @@ done
 # ---------- 8. 감시(watchdog) 로그 ----------
 head1 "8. 감시 작업 로그 (최근 기록)"
 WDLOG=""
-for f in /var/log/safetynote-watchdog.log; do [ -f "$f" ] && WDLOG="$f"; done
+[ -f "$WATCHDOG_LOG" ] && WDLOG="$WATCHDOG_LOG"
 if [ -n "$WDLOG" ]; then
   info "$WDLOG (수정 $(date -r "$WDLOG" '+%m-%d %H:%M' 2>/dev/null))"
-  tail -n 3 "$WDLOG" 2>/dev/null | while IFS= read -r l; do info "│ $l"; done
-  tail -n 20 "$WDLOG" 2>/dev/null | grep -qiE "rollback|롤백|RECOVERY.*시작|crash" && warn "watchdog 로그에 rollback/recovery/crash 기록 있음 — 내용 확인 필요"
+  # 이번 부팅 이후에 찍힌 이상 기록만 경고 대상 (이전 부팅의 오래된 기록은 제외)
+  AFTER_BAD=0; OLD_BAD=0
+  while IFS= read -r l; do
+    case "$l" in \[2[0-9][0-9][0-9]-*) ;; *) continue ;; esac
+    echo "$l" | grep -qiE '\[(WARN|ERROR|FAIL|ROLLBACK|RECOVERY)\]|롤백|rollback' || continue
+    t="${l:1:19}"
+    if [ "$BOOT_AT" = "?" ] || [[ ! "$t" < "$BOOT_AT" ]]; then
+      AFTER_BAD=$((AFTER_BAD+1)); info "│ (이번 부팅 이후) $l"
+    else
+      OLD_BAD=$((OLD_BAD+1))
+    fi
+  done < <(tail -n 50 "$WDLOG" 2>/dev/null)
+  if [ "$AFTER_BAD" -gt 0 ]; then
+    warn "이번 부팅 이후 watchdog 이 이상을 감지·조치함 (${AFTER_BAD}건) → 부팅 작업이 서버를 직접 올리지 못했을 가능성"
+  else
+    ok "이번 부팅 이후 watchdog 이상 기록 없음"
+  fi
+  [ "$OLD_BAD" -gt 0 ] && info "이번 부팅 이전의 이상 기록 ${OLD_BAD}건은 제외했습니다 (과거 기록)"
 else
   info "watchdog 로그 없음"
 fi
