@@ -164,6 +164,31 @@
       padding: 4px;
     }
 
+    /* ── 🚨 비상 복구 버튼 ── */
+    .btn-emergency {
+      width: 100%;
+      padding: 12px 14px;
+      background: rgba(220, 38, 38, 0.25);
+      border: 1.5px solid rgba(248, 113, 113, 0.6);
+      border-radius: 10px;
+      color: #fecaca;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.2s, border-color 0.2s;
+      text-decoration: none;
+      margin-top: 4px;
+    }
+    .btn-emergency:hover, .btn-emergency:active {
+      background: rgba(220, 38, 38, 0.45);
+      border-color: #f87171;
+      color: white;
+    }
+
     /* ── 현재 연결 표시 (저장된 주소 있을 때) ── */
     #currentConn {
       display: none;
@@ -311,12 +336,18 @@
       </div>
     </div>
 
-    <div class="presets">
-      <div class="preset-label">최근 사용 서버</div>
-      <div class="preset-list" id="presetList"></div>
-    </div>
+      <div class="presets">
+        <div class="preset-label">최근 사용 서버</div>
+        <div class="preset-list" id="presetList"></div>
+      </div>
 
-    <button class="btn-reset" onclick="resetSettings()">저장된 설정 초기화</button>
+      <!-- 🚨 비상 복구 페이지 바로가기 (포트 3445) -->
+      <button class="btn-emergency" onclick="openEmergencyRecovery()">
+        <span>🚨</span>
+        <span>비상 시스템 복구 페이지 (Port 3445)</span>
+      </button>
+
+      <button class="btn-reset" onclick="resetSettings()">저장된 설정 초기화</button>
   </div>
 
   <!-- 연결 중 -->
@@ -565,6 +596,21 @@
       }
 
       setTimeout(() => { window.location.replace(url); }, 400);
+    }
+
+    /* ── 🚨 비상 복구 페이지 열기 ── */
+    function openEmergencyRecovery() {
+      const savedAddr = getSavedAddr();
+      const inputAddr = document.getElementById('nasAddr') ? document.getElementById('nasAddr').value.trim() : '';
+      let host = inputAddr || savedAddr || 'linkmax.myds.me';
+      // 도메인 정리
+      host = host.replace(/^https?:\/\//, '').replace(/:[0-9]+.*$/, '').replace(/\/+$/, '');
+      if (!host) host = 'linkmax.myds.me';
+
+      const recoveryUrl = 'http://' + host + ':3445';
+      if (confirm('🚨 비상 시스템 복구 페이지(' + recoveryUrl + ')로 이동하시겠습니까?\n\n(서버 미작동 시 이전 버전으로 롤백 복구 가능)')) {
+        window.open(recoveryUrl, '_system');
+      }
     }
 
     /* ── 엔터키 처리 ── */
